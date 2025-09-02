@@ -17,21 +17,30 @@ class BasePolicy(nn.Module):
             layers.append(nn.Linear(in_dim, h))
             layers.append(activation())
             in_dim = h
-
+            
         # 출력층: mean
         layers.append(nn.Linear(in_dim, act_dim))
 
-    def forward(self, obs):
+    def forward(self, obs, params=None):
         # 네트워크 설정
         '''
         obs: Observation
+        params: inner loop에서 파라미터를 복제하여 사용하기 위해 사용
         '''
         raise NotImplementedError
 
-    def get_action(self, obs, deterministic=False):
+    def get_action(self, obs, params=None, deterministic=False):
+        '''
+        obs: Observation
+        params: inner loop에서 파라미터를 복제하여 사용하기 위해 사용
+        '''
         raise NotImplementedError
 
     # 필요 시: placeholder 없이 파라미터 dict로 실행
-    def _functional_forward(self, obs):
+    def _functional_forward(self, obs, params=None):
+        '''
+        obs: Observation
+        params: inner loop에서 파라미터를 복제하여 사용하기 위해 사용
+        '''
         # TODO: params dict(name->Tensor)로 동일 계산 수행
         raise NotImplementedError
