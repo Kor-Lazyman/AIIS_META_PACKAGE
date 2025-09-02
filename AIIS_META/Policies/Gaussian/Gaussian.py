@@ -84,7 +84,7 @@ class MultiHeadDiagGaussianPolicy(nn.Module):
 
     # ---- 샘플/로그확률: 헤드별 계산→concat/합산 ----
     @torch.no_grad()
-    def get_actions(self, obs: torch.Tensor, deterministic: bool=False):
+    def get_action(self, obs: torch.Tensor, deterministic: bool=False):
         """
         obs: [B, obs_dim]
         반환: actions [B, sum(d_i)], info = dict(mean, log_std, logp, per_head=...)

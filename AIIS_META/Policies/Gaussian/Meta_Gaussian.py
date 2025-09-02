@@ -74,9 +74,9 @@ class MetaMultiHeadDiagGaussianPolicy(MultiHeadDiagGaussianPolicy):
         }
         return action, info
 
-    # ----- TF와 유사한 인터페이스: 태스크 리스트 입력 -----
+    # 모든 task에 대한 action들을 수집
     @torch.no_grad()
-    def get_actions(self, observations: List[torch.Tensor]):
+    def get_actions_all_tasks(self, observations: List[torch.Tensor]):
         """
         observations: 길이 meta_batch_size, 각 텐서 [B, obs_dim]
         반환:
@@ -106,8 +106,7 @@ class MetaMultiHeadDiagGaussianPolicy(MultiHeadDiagGaussianPolicy):
             log_std = torch.cat(log_stds, dim=-1)
             logp = torch.stack(logps, dim=-1).sum(-1)         # [B]
 
-            B = obs.shape[0]
-            infos = [dict(mean=mean[i], log_std=log_std[i], logp=logp[i]) for i in range(B)]
+            infos = [dict(mean=mean[i], log_std=log_std[i], logp=logp[i]) for i in range(self.meta_batch_size)]
             actions_list.append(action)
             agent_infos_list.append(infos)
 

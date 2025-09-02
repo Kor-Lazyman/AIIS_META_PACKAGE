@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 from typing import Dict, List, Tuple
-
+from Utils import utils
 class MAML_BASE(nn.Module):
     """
     틀 전용: 내부/외부 목적, 업데이트, 샘플러 호출만 자리만들기
@@ -68,7 +68,7 @@ class MAML_BASE(nn.Module):
             for t in task_ids:
                 params = self.clone_params()
                 for k in range(self.inner_grad_steps):
-                    traj_in = sampler.rollout(task_id=t, params=params, phase="inner")
+                    traj_in = utils.rollout(task_id=t, params=params, phase="inner")
                     # (선택) KL 로깅/패널티용
                     _ = self.step_kl(traj_in, params)  # 필요 시 사용
                     loss_in = self.inner_obj(traj_in, params)
@@ -79,7 +79,7 @@ class MAML_BASE(nn.Module):
             # 2) 태스크별 outer 목적 계산 (적응 완료 후에 rollout 수집)
             base_grads = {n: torch.zeros_like(p) for n, p in self.policy.named_parameters()}
             for t, params in adapted_params_list:
-                traj_out = sampler.rollout(task_id=t, params=params, phase="outer")
+                traj_out = utils.rollout(task_id=t, params=params, phase="outer")
                 loss_out = self.outer_obj(traj_out, params)  # PPO-clip 등 포함(최소화 기준)
                 grads_t = torch.autograd.grad(loss_out, params.values(), create_graph=False) # gradient 직접 반영 하기 위해 task 별 gradient 계산
                 for (name, _p), g in zip(params.items(), grads_t):
