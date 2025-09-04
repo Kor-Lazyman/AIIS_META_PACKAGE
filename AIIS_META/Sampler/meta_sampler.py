@@ -34,7 +34,6 @@ class MetaSampler(Sampler):
             ):
         super(MetaSampler, self).__init__(env, policy, rollouts_per_meta_task, max_path_length)
         assert hasattr(env, 'set_task')
-        max_path_length = 200
         self.envs_per_task = rollouts_per_meta_task if envs_per_task is None else envs_per_task
         self.meta_batch_size = meta_batch_size
         self.total_samples = meta_batch_size * rollouts_per_meta_task * max_path_length

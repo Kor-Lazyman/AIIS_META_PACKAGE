@@ -30,7 +30,7 @@ class MetaSampleProcessor(SampleProcessor):
         for meta_task, paths in paths_meta_batch.items():
 
             # fits baseline, compute advantages and stack path data
-            samples_data, paths = self._compute_samples_data(paths)
+            samples_data, paths = self.process_samples(paths)
 
             samples_data_meta_batch.append(samples_data)
             all_paths.extend(paths)
