@@ -55,7 +55,7 @@ class MetaSampler(Sampler):
         assert len(tasks) == self.meta_batch_size
         self.vec_env.set_tasks(tasks)
 
-    def obtain_samples(self, log=False, log_prefix=''):
+    def obtain_samples(self, params_per_task, log=False, log_prefix=''):
         """
         Collect batch_size trajectories from each task
 
@@ -76,19 +76,31 @@ class MetaSampler(Sampler):
         running_paths = [_get_empty_running_paths_dict() for _ in range(self.vec_env.num_envs)]
 
         pbar = ProgBar(self.total_samples)
-
         policy = self.policy
 
         # initial reset of envs
         obses = self.vec_env.reset()
-
+        task_id = 0
         while n_samples < self.total_samples:
-            
+            policy.load_state_dict(params[task_id])
             # execute policy
             t = time.time()
             obs_per_task = np.split(np.asarray(obses), self.meta_batch_size)
             
-            actions, agent_infos = policy.get_actions(obs_per_task)
+            # ---- (2) 태스크별 파라미터를 "직접 덮어쓴" 뒤, 해당 블록에 대한 액션 배치 계산 ----
+            actions_blocks = []      # 각 원소 shape: [envs_per_task, act_dim]
+            agent_infos_blocks = []  # 길이 = meta_batch_size * envs_per_task, 각 원소 dict
+
+            for task_idx in range(self.meta_batch_size):
+                # (a) 정책 파라미터를 해당 태스크의 params로 덮어쓰기
+                self.policy.load_state_dict(params_per_task[task_idx], strict=False)
+
+                # (b) 단일 태스크 배치에 대한 액션/정보 계산
+                #     정책에 act_batch(obs_block) 메서드가 있어야 한다.
+                #     반환: actions_j [envs_per_task, act_dim], infos_j (list of dict, len=envs_per_task)
+                actions_j, infos_j = self.policy.act_batch(obs_per_task[task_idx])
+                actions_blocks.append(actions_j)
+                agent_infos_blocks.extend(infos_j)
 
             # step environments
             t = time.time()
@@ -120,10 +132,12 @@ class MetaSampler(Sampler):
                     ))
                     new_samples += len(running_paths[idx]["rewards"])
                     running_paths[idx] = _get_empty_running_paths_dict()
-
+                    task_id+=1
+                   
             pbar.update(new_samples)
             n_samples += new_samples
             obses = next_obses
+            
         pbar.stop()
 
         self.total_timesteps_sampled += self.total_samples
