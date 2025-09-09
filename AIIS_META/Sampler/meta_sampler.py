@@ -26,17 +26,17 @@ class MetaSampler(Sampler):
             self,
             env,
             policy,
-            rollouts_per_meta_task,
+            rollout_per_task,
             meta_batch_size,
             max_path_length,
             envs_per_task=None,
             parallel=False
             ):
-        super(MetaSampler, self).__init__(env, policy, rollouts_per_meta_task, max_path_length)
+        super(MetaSampler, self).__init__(env, policy, rollout_per_task, max_path_length)
         assert hasattr(env, 'set_task')
-        self.envs_per_task = rollouts_per_meta_task if envs_per_task is None else envs_per_task
+        self.envs_per_task = rollout_per_task if envs_per_task is None else envs_per_task
         self.meta_batch_size = meta_batch_size
-        self.total_samples = meta_batch_size * rollouts_per_meta_task * max_path_length
+        self.total_samples = meta_batch_size * rollout_per_task * max_path_length
         self.parallel = parallel
         self.total_timesteps_sampled = 0
 
@@ -76,13 +76,11 @@ class MetaSampler(Sampler):
         running_paths = [_get_empty_running_paths_dict() for _ in range(self.vec_env.num_envs)]
 
         pbar = ProgBar(self.total_samples)
-        policy = self.policy
 
         # initial reset of envs
         obses = self.vec_env.reset()
         task_id = 0
         while n_samples < self.total_samples:
-            policy.load_state_dict(params[task_id])
             # execute policy
             t = time.time()
             obs_per_task = np.split(np.asarray(obses), self.meta_batch_size)

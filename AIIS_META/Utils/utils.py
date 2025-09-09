@@ -5,6 +5,61 @@ import json
 import torch
 from typing import Dict, List, Tuple, Optional
 
+def to_tensor(self, x):
+        if isinstance(x, torch.Tensor):
+            return x.to(self.device)
+        import numpy as np
+        if isinstance(x, (list, tuple)):
+            x = np.asarray(x)
+        return torch.as_tensor(x, device=self.device)
+
+def compute_gae(rewards, values, gamma=0.99, lam=0.95):
+    """
+    Generalized Advantage Estimation (GAE)
+
+    Args:
+        rewards (np.ndarray): shape [T]
+        values  (np.ndarray): shape [T+1] (bootstrap value 포함)
+        gamma (float): discount factor
+        lam (float): GAE lambda
+
+    Returns:
+        advantages (np.ndarray): shape [T]
+
+    Note:
+        - values는 trajectory 길이 T보다 1 길어야 함
+          (마지막 값은 부트스트랩된 value)
+        - ProMP, PPO, A2C 등의 advantage 계산에 사용 가능
+    """
+    T = len(rewards)
+    adv = np.zeros(T, dtype=np.float32)
+    gae = 0.0
+    for t in reversed(range(T)):
+        delta = rewards[t] + gamma * values[t + 1] - values[t]
+        gae = delta + gamma * lam * gae
+        adv[t] = gae
+    return adv
+def discount_cumsum(x, discount):
+    """
+    See https://docs.scipy.org/doc/scipy/reference/tutorial/signal.html#difference-equation-filtering
+
+    Returns:
+        (float) : y[t] - discount*y[t+1] = x[t] or rev(y)[t] - discount*rev(y)[t-1] = rev(x)[t]
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+
+def clone_params(self, from_params: Optional[Dict[str, torch.Tensor]] = None, num_tasks = 1
+                     ) -> Dict[str, torch.Tensor]:
+        parm_list = []
+        """파라미터 dict를 복제해 gradient 대상 텐서로 준비"""
+        for x in range(num_tasks):
+            if from_params is None:
+                src = dict(self.policy.named_parameters())
+            else:
+                src = from_params
+            parm_list.append({n: p.clone().detach().requires_grad_(True) for n, p in src.items()})
+        return parm_list
+'''
 def get_original_tf_name(name):
     """
     Args:
@@ -67,45 +122,11 @@ def normalize_advantages(advantages):
         (np.ndarray): np array with the advantages normalized
     """
     return (advantages - np.mean(advantages)) / (advantages.std() + 1e-8)
-def compute_gae(rewards, values, gamma=0.99, lam=0.95):
-    """
-    Generalized Advantage Estimation (GAE)
-
-    Args:
-        rewards (np.ndarray): shape [T]
-        values  (np.ndarray): shape [T+1] (bootstrap value 포함)
-        gamma (float): discount factor
-        lam (float): GAE lambda
-
-    Returns:
-        advantages (np.ndarray): shape [T]
-
-    Note:
-        - values는 trajectory 길이 T보다 1 길어야 함
-          (마지막 값은 부트스트랩된 value)
-        - ProMP, PPO, A2C 등의 advantage 계산에 사용 가능
-    """
-    T = len(rewards)
-    adv = np.zeros(T, dtype=np.float32)
-    gae = 0.0
-    for t in reversed(range(T)):
-        delta = rewards[t] + gamma * values[t + 1] - values[t]
-        gae = delta + gamma * lam * gae
-        adv[t] = gae
-    return adv
 
 def shift_advantages_to_positive(advantages):
     return (advantages - np.min(advantages)) + 1e-8
 
 
-def discount_cumsum(x, discount):
-    """
-    See https://docs.scipy.org/doc/scipy/reference/tutorial/signal.html#difference-equation-filtering
-
-    Returns:
-        (float) : y[t] - discount*y[t+1] = x[t] or rev(y)[t] - discount*rev(y)[t-1] = rev(x)[t]
-    """
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 
 def explained_variance_1d(ypred, y):
@@ -147,25 +168,7 @@ def concat_tensor_dict_list(tensor_dict_list):
         ret[k] = v
     return ret
 
-def to_tensor(self, x):
-        if isinstance(x, torch.Tensor):
-            return x.to(self.device)
-        import numpy as np
-        if isinstance(x, (list, tuple)):
-            x = np.asarray(x)
-        return torch.as_tensor(x, device=self.device)
 
-def clone_params(self, from_params: Optional[Dict[str, torch.Tensor]] = None, num_tasks = 1
-                     ) -> Dict[str, torch.Tensor]:
-        parm_list = []
-        """파라미터 dict를 복제해 gradient 대상 텐서로 준비"""
-        for x in range(num_tasks):
-            if from_params is None:
-                src = dict(self.policy.named_parameters())
-            else:
-                src = from_params
-            parm_list.append({n: p.clone().detach().requires_grad_(True) for n, p in src.items()})
-        return parm_list
 def set_seed(seed: int) -> None:
     """
     Set random seeds for Python, NumPy, and PyTorch (CPU/CUDA).
@@ -194,3 +197,4 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
     print(f"Using seed {seed})")
+'''

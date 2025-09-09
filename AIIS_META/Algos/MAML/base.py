@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, List, Tuple, Optional
 from Utils import utils  # rollout 등 외부 유틸 사용 가정
-
+from Sampler import meta_sampler as sampler
 class MAML_BASE(nn.Module):
     """
     MAML 틀:
@@ -13,11 +13,13 @@ class MAML_BASE(nn.Module):
     """
     def __init__(self,
                  env,
+                 max_path_length,
                  policy: nn.Module,
                  alpha: float = 1e-3,     # inner lr
                  beta: float = 1e-3,      # outer lr
                  inner_grad_steps: int = 1,
                  num_tasks: int = 4,
+                 parallel = False,
                  rollout_per_task = 5,
                  clip_eps: float = 0.2,
                  init_inner_kl_penalty: float = 1e-2,
@@ -33,6 +35,14 @@ class MAML_BASE(nn.Module):
         self.clip_eps = clip_eps
         self.inner_kl_coeff = torch.full((inner_grad_steps,), init_inner_kl_penalty)
         self.device = device
+
+        self.sampler = sampler(self.env,
+            self.policy,
+            self.rollout_per_task,
+            self.num_tasks,
+            max_path_length,
+            envs_per_task=None,
+            parallel=parallel)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=beta)
 
     # --------- 훅(오버라이드 지점) ---------
@@ -48,19 +58,6 @@ class MAML_BASE(nn.Module):
         """(옵션) KL(old||new) 측정/패널티용"""
         raise NotImplementedError
 
-    # --------- 유틸 ---------
-    def clone_params(self, from_params: Optional[Dict[str, torch.Tensor]] = None, num_tasks = 1
-                     ) -> Dict[str, torch.Tensor]:
-        parm_list = []
-        """파라미터 dict를 복제해 gradient 대상 텐서로 준비"""
-        for x in range(num_tasks):
-            if from_params is None:
-                src = dict(self.policy.named_parameters())
-            else:
-                src = from_params
-            parm_list.append({n: p.clone().detach().requires_grad_(True) for n, p in src.items()})
-        return parm_list
-
     def apply_base_grads(self, base_grads: Dict[str, torch.Tensor], scale: float = 1.0):
         """누적된 meta-gradient를 실제 파라미터에 적용"""
         self.optimizer.zero_grad()
@@ -70,13 +67,7 @@ class MAML_BASE(nn.Module):
                 p.grad = base_grads[n] * scale
         self.optimizer.step()
     
-    def to_tensor(self, x):
-        if isinstance(x, torch.Tensor):
-            return x.to(self.device)
-        import numpy as np
-        if isinstance(x, (list, tuple)):
-            x = np.asarray(x)
-        return torch.as_tensor(x, device=self.device)
+
     # --------- inner / outer 분리 ---------
     def inner_loop(self, sampler,
                    task_ids: Optional[List[int]],
@@ -166,7 +157,6 @@ class MAML_BASE(nn.Module):
 
         self.apply_base_grads(base_grads, scale=1.0/len(adapted_params_list))
         return torch.stack(losses).mean().item() if losses else 0.0
-
 
     # --------- 학습 루프(오케스트레이션) ---------
     def learn(self, sampler, total_iters: int):
