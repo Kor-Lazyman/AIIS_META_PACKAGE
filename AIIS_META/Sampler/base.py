@@ -1,6 +1,7 @@
 # sample_processor_refactored.py
 from Utils import utils
 import numpy as np
+import torch
 
 class Sampler(object):
     """
@@ -59,69 +60,37 @@ class SampleProcessor(object):
         self.normalize_adv = normalize_adv
         self.positive_adv = positive_adv
 
-    def process_samples(self, paths, advantages=None, adv_in_paths_key=None):
-        """
-        Args:
-            paths (list): 각 path는 dict로, 최소 {'observations','actions','rewards'} 포함
-            advantages (np.ndarray | list[np.ndarray] | None):
-                - 제공되면 그대로 사용 (baseline/GAE 스킵)
-                - 리스트면 path 순서대로 concat
-            adv_in_paths_key (str | None):
-                - 제공되면 각 path[adv_in_paths_key]를 advantage로 사용
+    def process_samples(self, paths, policy, baseline=None, use_adv_formula=False):
 
-        Returns:
-            dict: {
-              observations, actions, rewards, returns, advantages, env_infos, agent_infos
-            }
-        """
-        assert isinstance(paths, list), 'paths must be a list'
-        assert paths[0].keys() >= {'observations', 'actions', 'rewards'}
-
-        # (1) returns 계산
         for path in paths:
-            path["returns"] = utils.discount_cumsum(path["rewards"], self.discount)
+            rewards = path["rewards"]
+            returns = utils.discount_cumsum(rewards, gamma=self.gamma)
+            path["returns"] = returns
 
-        # (2) advantages 결정: external > path key > baseline+GAE/제로베이스라인
-        if advantages is not None:
-            adv_flat = self._flatten_advantages_input(paths, advantages)
-        elif adv_in_paths_key is not None:
-            # 각 path에 adv_in_paths_key가 있다고 가정
-            for p in paths:
-                assert adv_in_paths_key in p, f"adv_in_paths_key '{adv_in_paths_key}'가 path에 없습니다."
-            adv_flat = np.concatenate([p[adv_in_paths_key] for p in paths])
-        else:
-            # baseline 기반 GAE (baseline 없으면 0 baseline)
-            if self.baseline is not None:
-                self.baseline.fit(paths, target_key="returns")
-                all_path_baselines = [self.baseline.predict(p) for p in paths]
-            else:
-                # 0 baseline: 각 path 길이에 맞게 0 벡터
-                all_path_baselines = [np.zeros_like(p["rewards"]) for p in paths]
+            if "advantages" in path:
+                continue
 
-            # advantages를 path별로 계산/저장
-            paths = self._compute_advantages(paths, all_path_baselines)
-            adv_flat = np.concatenate([p["advantages"] for p in paths])
+            if getattr(policy, "has_value_fn", False):
+                values = policy.value_function(torch.as_tensor(path["observations"], dtype=torch.float32))
+                path["advantages"] = returns - values.detach().cpu().numpy()
+                continue
 
-        # (3) 스택 (경로를 concat한 순서에 맞춰)
-        observations, actions, rewards, returns, env_infos, agent_infos = self._stack_path_data(paths)
+            if use_adv_formula:
+                # [NOTE] baseline 없으면 np.zeros 대신 오류 반환이 더 안전
+                if baseline is None:
+                    raise ValueError("GAE requires baseline for values.")
+                values = baseline.predict(path)
+                path["advantages"] = utils.compute_gae(rewards, values, gamma=self.gamma, lam=self.lam)
+                continue
 
-        # (4) advantage 후처리
-        if self.normalize_adv:
-            adv_flat = utils.normalize_advantages(adv_flat)
-        if self.positive_adv:
-            adv_flat = utils.shift_advantages_to_positive(adv_flat)
+            if baseline is not None:
+                baseline.fit(paths)
+                values = baseline.predict(path)
+                path["advantages"] = returns - values
+                continue
 
-        # (5) 반환 dict
-        samples_data = dict(
-            observations=observations,
-            actions=actions,
-            rewards=rewards,
-            returns=returns,
-            advantages=adv_flat,
-            env_infos=env_infos,
-            agent_infos=agent_infos,
-        )
-        return samples_data, paths
+            raise ValueError("No way to compute advantages!")
+
 
     # -------- helpers --------
     def _flatten_advantages_input(self, paths, advantages):

@@ -67,11 +67,12 @@ class MetaMultiHeadDiagGaussianPolicy(MultiHeadDiagGaussianPolicy):
             logps.append(dist.log_prob(a))
         action = torch.cat(acts, dim=-1)[0]                 # [total_act_dim]
         info = {
-            "mean": torch.cat(means, dim=-1)[0],
-            "log_std": torch.cat(log_stds, dim=-1)[0],
-            "logp": torch.stack(logps, dim=-1).sum(-1)[0],
-            "per_head": [{"mean": m[0], "log_std": ls[0]} for m, ls in zip(means, log_stds)]
-        }
+                "mean": torch.cat(means, dim=-1)[0],
+                "log_std": torch.cat(log_stds, dim=-1)[0],
+                "logp": torch.stack(logps, dim=-1).sum(-1)[0],
+                # [DEBUG: optional info, can be removed later]
+                "per_head": [{"mean": m[0], "log_std": ls[0]} for m, ls in zip(means, log_stds)]
+            }
         return action, info
 
     # 모든 task에 대한 action들을 수집

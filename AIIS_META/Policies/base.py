@@ -30,8 +30,10 @@ class BasePolicy(nn.Module):
                  act_dim: int,
                  hidden: Sequence[int] = (64, 64),
                  activation: Type[nn.Module] = nn.Tanh,
-                 build_backbone: bool = True):
+                 build_backbone: bool = True,
+                 has_value_fn: bool = False):
         super().__init__()
+
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.hidden = tuple(hidden)
@@ -48,7 +50,8 @@ class BasePolicy(nn.Module):
                 in_dim = h
             layers.append(nn.Linear(in_dim, act_dim))
             self.net = nn.Sequential(*layers)
-
+        
+        self.has_value_fn = has_value_fn  # [NEW]
     # ---------------------- 공통 forward ----------------------
     def forward(self,
                 obs: torch.Tensor,
@@ -97,7 +100,18 @@ class BasePolicy(nn.Module):
           - 분포 타입에 상관없이 로그확률만 정확히 반환하면 알고리즘 쪽은 그대로 작동한다.
         """
         raise NotImplementedError
-
+    
+    # [NEW] baseline 지원 훅
+    def value_function(self,
+                       obs: torch.Tensor,
+                       params: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
+        """
+        A2C/PPO 등 critic이 있는 정책에서만 구현.
+        없는 경우 NotImplementedError 발생.
+        """
+        if not self.has_value_fn:
+            raise NotImplementedError("Policy has no value_function.")
+        raise NotImplementedError("Subclass with baseline must implement this.")
     # ---------------------- 이름 호환용/편의 API ----------------------
     @torch.no_grad()
     def get_action(self,
@@ -134,7 +148,7 @@ class BasePolicy(nn.Module):
               agent_infos_list: 길이 meta_batch_size, 각 길이=B의 리스트(dict), 각 dict에 'logp' 포함
         """
         raise NotImplementedError
-
+    '''
     # ---------------------- functional forward 훅 ----------------------
     def _functional_forward(self,
                             obs: torch.Tensor,
@@ -146,3 +160,4 @@ class BasePolicy(nn.Module):
         기본 Base는 정책 구조가 다양하므로 NotImplemented로 둔다.
         """
         raise NotImplementedError
+    '''
