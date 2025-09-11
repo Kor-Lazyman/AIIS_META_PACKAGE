@@ -1,117 +1,210 @@
+# -*- coding: utf-8 -*-
+"""
+Single-head diagonal Gaussian policy (out_dim 기반)
+- mean: backbone -> single linear head -> [B, out_dim]
+- std:
+    - 기본: state-independent log_std parameter of shape [out_dim]
+    - 선택: state_dependent_std=True -> head outputs 2*out_dim (mean, log_std)
+Implements common methods: forward, distribution, act, log_prob, functional forward/distribution.
+"""
 import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
 from torch.distributions.independent import Independent
-from typing import List, Dict, Optional, Tuple, Sequence, Type
-from base import BasePolicy
+from torch.func import functional_call
+from typing import Optional, Dict, Tuple
 
-# ----- 공용: 간단 MLP -----
-def build_mlp(in_dim: int, hidden: Sequence[int], activation: Type[nn.Module]) -> nn.Sequential:
-    layers, d = [], in_dim
+from base import BasePolicy  # 사용 중인 base 인터페이스에 맞춰져 있어야 함
+
+
+def build_mlp(in_dim: int, hidden: tuple, activation: type) -> tuple:
+    layers = []
+    d = in_dim
     for h in hidden:
-        layers += [nn.Linear(d, h), activation()]
+        layers.append(nn.Linear(d, h))
+        layers.append(activation())
         d = h
     return nn.Sequential(*layers), d
 
-# ----- 상속 구현: 대각 가우시안 정책 -----
-class MultiHeadDiagGaussianPolicy(nn.Module):
+
+class GaussianPolicy(BasePolicy):
     """
-    다중 연속 액션 헤드용 정책.
-    - 공유 backbone + 헤드별 mean linear
-    - 헤드별 log_std 파라미터 (상태불변), 필요 시 state-dependent로 확장 가능
+    out_dim 기준의 단일-head diagonal Gaussian policy.
+    Args:
+      obs_dim, out_dim: 차원
+      hidden, activation: backbone
+      learn_std: state-independent std를 학습할지 여부 (only used when state_dependent_std=False)
+      init_std: 초기 std 값 (state-independent일 때)
+      min_std: numerical 안정성 위한 최소 std
+      state_dependent_std: True면 head가 2*out_dim 출력 (mean, log_std)
     """
     def __init__(self,
                  obs_dim: int,
-                 head_act_dims: Sequence[int],           # 예: [2, 3, 1] → 3개 헤드, 합계 act_dim=6
-                 hidden: Sequence[int] = (64, 64),
-                 activation: Type[nn.Module] = nn.Tanh,
+                 out_dim: int,
+                 hidden: tuple = (64, 64),
+                
                  learn_std: bool = True,
                  init_std: float = 1.0,
-                 min_std: float = 1e-6):
-        super().__init__()
-        self.head_act_dims = list(head_act_dims)
-        self.total_act_dim = sum(self.head_act_dims)
+                 min_std: float = 1e-6,
+                 state_dependent_std: bool = False,
+                 has_value_fn: bool = False):
+        total_out_dim = int(out_dim)
+        super().__init__(obs_dim=obs_dim,
+                         out_dim=total_out_dim,
+                         hidden=hidden,
+                         activation=nn.Tanh,
+                         build_backbone=False,
+                         has_value_fn=has_value_fn)
 
-        # 공유 백본
-        self.backbone, feat_dim = build_mlp(obs_dim, hidden, activation) # back bone: output 전까지의 layer들
-
-        # 헤드별 mean 프로젝션
-        self.heads = nn.ModuleList([nn.Linear(feat_dim, d) for d in self.head_act_dims])
-
-        # 헤드별 log_std 파라미터/버퍼: [d_i]
-        init_log_std = float(torch.log(torch.tensor(init_std)))
-        if learn_std:
-            self.log_std_params = nn.ParameterList(
-                [nn.Parameter(torch.full((d,), init_log_std)) for d in self.head_act_dims]
-            )
-        else:
-            self.log_std_params = nn.ParameterList()
-            for d in self.head_act_dims:
-                p = nn.Parameter(torch.full((d,), init_log_std), requires_grad=False)
-                self.log_std_params.append(p)
+        self.obs_dim = obs_dim
+        self.out_dim = total_out_dim
+        self.activation = nn.Tanh,
+        self.state_dependent_std = bool(state_dependent_std)
         self.min_log_std = float(torch.log(torch.tensor(min_std)))
 
-    # ---- helper: 헤드별 분포 만들기 ----
-    def _make_head_dists(self, feat: torch.Tensor,
-                         log_std_list: List[torch.Tensor]) -> List[Independent]:
-        dists = []
-        for i, head in enumerate(self.heads):
-            mean_i = head(feat)                           # [B, d_i]
-            log_std_i = torch.clamp(log_std_list[i], min=self.min_log_std)
-            if log_std_i.dim() == 1:
-                log_std_i = log_std_i.expand_as(mean_i)   # [B, d_i]
-            dist_i = Independent(Normal(mean_i, log_std_i.exp()), 1)
-            dists.append(dist_i)
-        return dists
+        # backbone
+        self.backbone, feat_dim = build_mlp(obs_dim, hidden, self.activation)
 
-    # ---- 기본 forward: mean/log_std를 concat해서 반환(편의) ----
-    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # head: if state_dependent_std -> output 2*out_dim, else output out_dim (mean)
+        head_out = self.out_dim
+        self.head = nn.Linear(feat_dim, head_out)
+
+        # state-independent log_std param (only used if not state_dependent_std)
+        init_log_std = float(torch.log(torch.tensor(init_std)))
+        if not self.state_dependent_std:
+            if learn_std:
+                self.log_std = nn.Parameter(torch.full((self.out_dim,), init_log_std))
+            else:
+                p = nn.Parameter(torch.full((self.out_dim,), init_log_std), requires_grad=False)
+                # still register as parameter so it appears in state_dict
+                self.register_parameter("log_std", p)
+                self.log_std = p
+        else:
+            # placeholder for attribute existence (won't be used)
+            self.register_parameter("log_std", None)
+
+    # ---------------- forward: mean only ----------------
+    def forward(self, obs: torch.Tensor, params: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
+        """
+        Returns mean: [B, out_dim]
+        If state_dependent_std True, head outputs mean and log_std but forward returns mean only.
+        If params provided -> functional forward using that param dict.
+        """
+        if params is not None:
+            return self._functional_forward(obs, params)
+
         feat = self.backbone(obs)
-        means, log_stds = [], []
-        for i, head in enumerate(self.heads):
-            m = head(feat)                                # [B, d_i]
-            ls = self.log_std_params[i]
-            if ls.dim() == 1: ls = ls.expand_as(m)
-            means.append(m); log_stds.append(ls)
-        return torch.cat(means, dim=-1), torch.cat(log_stds, dim=-1)
+        out = self.head(feat)  # [B, act_or_2act]
+        if self.state_dependent_std:
+            mean = out[..., :self.out_dim]
+        else:
+            mean = out
+        return mean
 
-    # ---- 분포 (헤드별 리스트와 합성 결과 둘 다 계산) ----
-    def distribution(self, obs: torch.Tensor):
+    # ---------------- build distribution (current params) ----------------
+    def distribution(self, obs: torch.Tensor) -> Independent:
+        """
+        Returns a single Independent Normal distribution over out_dim.
+        """
         feat = self.backbone(obs)
-        log_std_list = [p for p in self.log_std_params]
-        dists = self._make_head_dists(feat, log_std_list)
-        return dists
+        out = self.head(feat)
+        if self.state_dependent_std:
+            mean = out[..., :self.out_dim]
+            log_std = out[..., self.out_dim:]
+            log_std = torch.clamp(log_std, min=self.min_log_std)
+            std = log_std.exp()
+        else:
+            mean = out
+            log_std = torch.clamp(self.log_std, min=self.min_log_std)
+            # expand to batch
+            if mean.dim() == 2:
+                log_std = log_std.unsqueeze(0).expand_as(mean)
+            std = log_std.exp()
+        base = Normal(mean, std)
+        return Independent(base, 1)
 
-    # ---- 샘플/로그확률: 헤드별 계산→concat/합산 ----
+    # ---------------- functional distribution from params ----------------
+    def _distribution_from_params(self, obs: torch.Tensor, params: Dict[str, torch.Tensor]) -> Independent:
+        """
+        params: state_dict-like mapping. Keys should match module structure:
+          - 'backbone.*' for backbone
+          - 'head.*' for head linear
+          - 'log_std' for state-independent log_std (if used)
+        """
+        # backbone functional_call
+        bb_keys = {k[len("backbone."):]: v for k, v in params.items() if k.startswith("backbone.")}
+        feat = functional_call(self.backbone, bb_keys, (obs,))
+
+        # head
+        head_keys = {k[len("head."):]: v for k, v in params.items() if k.startswith("head.")}
+        out = functional_call(self.head, head_keys, (feat,))
+
+        if self.state_dependent_std:
+            mean = out[..., :self.out_dim]
+            log_std = out[..., self.out_dim:]
+            log_std = torch.clamp(log_std, min=self.min_log_std)
+            std = log_std.exp()
+        else:
+            mean = out
+            # try params for 'log_std' otherwise fallback to module's param
+            if "log_std" in params:
+                param_log_std = params["log_std"]
+            else:
+                param_log_std = self.log_std
+            param_log_std = torch.clamp(param_log_std, min=self.min_log_std)
+            if mean.dim() == 2:
+                param_log_std = param_log_std.unsqueeze(0).expand_as(mean)
+            std = param_log_std.exp()
+
+        base = Normal(mean, std)
+        return Independent(base, 1)
+
+    # ---------------- act ----------------
     @torch.no_grad()
-    def get_action(self, obs: torch.Tensor, deterministic: bool=False):
+    def act(self, obs: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        obs: [B, obs_dim]
-        반환: actions [B, sum(d_i)], info = dict(mean, log_std, logp, per_head=...)
+        obs: [B, obs_dim] or [obs_dim]
+        returns: actions [B, out_dim], info dict {mean, log_std, logp}
         """
-        dists = self.distribution(obs)
-        acts, means, log_stds, logps = [], [], [], []
-        for dist in dists:
-            a = dist.mean if deterministic else dist.sample()
-            acts.append(a)
-            means.append(dist.mean)
-            log_stds.append(torch.log(dist.base_dist.scale))
-            logps.append(dist.log_prob(a))
-        action = torch.cat(acts, dim=-1)                 # [B, total_act_dim]
-        mean = torch.cat(means, dim=-1)
-        log_std = torch.cat(log_stds, dim=-1)
-        logp = torch.stack(logps, dim=-1).sum(-1)        # [B], 헤드 합산
-        info = {
-            "mean": mean, "log_std": log_std, "logp": logp,
-            "per_head": [{"mean": m, "log_std": ls} for m, ls in zip(means, log_stds)]
-        }
+        if obs.dim() == 1:
+            obs = obs.unsqueeze(0)
+
+        dist = self.distribution(obs)
+        if deterministic:
+            action = dist.mean
+        else:
+            action = dist.rsample()  # reparameterized sample (rsample) could be used; .sample() also ok
+        mean = dist.mean
+        # reconstruct log_std: dist.base_dist.scale is std
+        log_std = torch.log(dist.base_dist.scale)
+        logp = dist.log_prob(action)
+
+        info = {"mean": mean, "log_std": log_std, "logp": logp}
         return action, info
 
-    def log_prob(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    # ---------------- log_prob ----------------
+    def log_prob(self, obs: torch.Tensor, actions: torch.Tensor, params: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
         """
-        actions: [B, total_act_dim] (헤드 concat)
+        Returns log probability [B]
+        If params provided, use those to build distribution functionally.
         """
-        dists = self.distribution(obs)
-        splits = torch.split(actions, self.head_act_dims, dim=-1)
-        logps = [dist.log_prob(a) for dist, a in zip(dists, splits)]
-        return torch.stack(logps, dim=-1).sum(-1)        # [B]
+        if params is None:
+            dist = self.distribution(obs)
+        else:
+            dist = self._distribution_from_params(obs, params)
+        return dist.log_prob(actions)
+
+    # ---------------- functional forward (means) ----------------
+    def _functional_forward(self, obs: torch.Tensor, params: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Return mean under params (state_dict mapping). Same key scheme as _distribution_from_params.
+        """
+        bb_keys = {k[len("backbone."):]: v for k, v in params.items() if k.startswith("backbone.")}
+        feat = functional_call(self.backbone, bb_keys, (obs,))
+        head_keys = {k[len("head."):]: v for k, v in params.items() if k.startswith("head.")}
+        out = functional_call(self.head, head_keys, (feat,))
+        if self.state_dependent_std:
+            mean = out[..., :self.out_dim]
+        else:
+            mean = out
+        return mean

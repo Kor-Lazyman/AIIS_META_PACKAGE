@@ -69,8 +69,7 @@ class MAML_BASE(nn.Module):
     
 
     # --------- inner / outer 분리 ---------
-    def inner_loop(self, sampler,
-                   task_ids: Optional[List[int]],
+    def inner_loop(self,
                    base_params: Optional[Dict[str, torch.Tensor]]
                    ) -> List[Tuple[int, Dict[str, torch.Tensor]]]:
         """
@@ -82,7 +81,7 @@ class MAML_BASE(nn.Module):
         for grad in range(self.inner_grad_steps+1):
             # 1) pre-update trajectories 수집
             # 기대 반환: Dict[int, List[traj_dict]] 또는 List[List[traj_dict]]
-            paths = sampler.obtain_samples(params_list)
+            paths = self.sampler.obtain_samples(params_list)
 
             # 2) 태스크별 traj 리스트 얻기 (키가 dict일 수도, list index일 수도 있으니 정규화)
             if isinstance(paths, dict):
@@ -159,7 +158,7 @@ class MAML_BASE(nn.Module):
         return torch.stack(losses).mean().item() if losses else 0.0
 
     # --------- 학습 루프(오케스트레이션) ---------
-    def learn(self, sampler, total_iters: int):
+    def learn(self, total_iters: int):
         """
         learn은 inner/outer 호출만 담당:
           1) inner_loop(...) -> adapted_params_list
@@ -168,7 +167,7 @@ class MAML_BASE(nn.Module):
         for _ in range(total_iters):
             # 1) inner: meta-parameter -> adapted params
             base_params = dict(self.policy.named_parameters())
-            adapted_params_per_task, paths = self.inner_loop(sampler, task_ids=None, base_params=base_params)
+            adapted_params_per_task, paths = self.inner_loop(task_ids=None, base_params=base_params)
 
             # 2) outer: adapted params로 meta-parameter 업데이트
             _ = self.outer_loop(paths, adapted_params_per_task)

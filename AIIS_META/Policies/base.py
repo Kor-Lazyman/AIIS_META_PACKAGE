@@ -27,7 +27,7 @@ class BasePolicy(nn.Module):
 
     def __init__(self,
                  obs_dim: int,
-                 act_dim: int,
+                 out_dim: int,
                  hidden: Sequence[int] = (64, 64),
                  activation: Type[nn.Module] = nn.Tanh,
                  build_backbone: bool = True,
@@ -35,7 +35,7 @@ class BasePolicy(nn.Module):
         super().__init__()
 
         self.obs_dim = obs_dim
-        self.act_dim = act_dim
+        self.out_dim = out_dim
         self.hidden = tuple(hidden)
         self.activation = activation
 
@@ -48,7 +48,7 @@ class BasePolicy(nn.Module):
                 layers.append(nn.Linear(in_dim, h))
                 layers.append(activation())
                 in_dim = h
-            layers.append(nn.Linear(in_dim, act_dim))
+            layers.append(nn.Linear(in_dim, out_dim))
             self.net = nn.Sequential(*layers)
         
         self.has_value_fn = has_value_fn  # [NEW]
@@ -78,7 +78,7 @@ class BasePolicy(nn.Module):
         Args:
           obs: [B, obs_dim] 또는 [obs_dim]
         Returns:
-          actions: [B, act_dim] 또는 [act_dim]
+          actions: [B, out_dim] 또는 [out_dim]
           agent_infos: dict로 반드시 'logp' 키 포함(샘플 시점의 log_prob, shape: [B])
         Note:
           - 분포 샘플링/결정론적 행동/로그확률 계산은 '정책별'로 구현해야 한다.
@@ -92,7 +92,7 @@ class BasePolicy(nn.Module):
         """
         Args:
           obs: [B, obs_dim]
-          actions: [B, act_dim]
+          actions: [B, out_dim]
           params: state_dict 형태(선택). 주어지면 해당 파라미터로 log_prob 계산.
         Returns:
           [B] 텐서 (각 샘플의 log_prob)
@@ -144,7 +144,7 @@ class BasePolicy(nn.Module):
         예시:
           - observations: 길이 meta_batch_size, 각 [B, obs_dim]
           - return: (actions_list, agent_infos_list)
-              actions_list: 길이 meta_batch_size, 각 [B, act_dim]
+              actions_list: 길이 meta_batch_size, 각 [B, out_dim]
               agent_infos_list: 길이 meta_batch_size, 각 길이=B의 리스트(dict), 각 dict에 'logp' 포함
         """
         raise NotImplementedError
