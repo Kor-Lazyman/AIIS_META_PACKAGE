@@ -29,7 +29,6 @@ class BasePolicy(nn.Module):
                  obs_dim: int,
                  out_dim: int,
                  hidden: Sequence[int] = (64, 64),
-                 activation: Type[nn.Module] = nn.Tanh,
                  build_backbone: bool = True,
                  has_value_fn: bool = False):
         super().__init__()
@@ -37,7 +36,6 @@ class BasePolicy(nn.Module):
         self.obs_dim = obs_dim
         self.out_dim = out_dim
         self.hidden = tuple(hidden)
-        self.activation = activation
 
         # (옵션) 단순 MLP 백본. 정책에 따라 무시/재정의 가능.
         self.net: Optional[nn.Sequential] = None
@@ -46,7 +44,7 @@ class BasePolicy(nn.Module):
             in_dim = obs_dim
             for h in hidden:
                 layers.append(nn.Linear(in_dim, h))
-                layers.append(activation())
+                layers.append(nn.Tanh())
                 in_dim = h
             layers.append(nn.Linear(in_dim, out_dim))
             self.net = nn.Sequential(*layers)

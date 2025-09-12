@@ -1,19 +1,17 @@
 from gym.core import Env
 import numpy as np
 import random
-from envs.simpy_envs.config_SimPy import *
+from config_SimPy import *
 from gym import spaces
 import numpy as np
-from envs.simpy_envs.config_RL import * 
-# import envs.simpy_envs.environment as env # for Meta-learning
-if STATIONARY:
-    import envs.simpy_envs.environment as env #for baseline_test
-else:
-    import envs.simpy_envs.environment_nonstationary as env
-from envs.simpy_envs.log_SimPy import *
-from envs.simpy_envs.log_RL import *
+from config_RL import * 
+# import environment as env # for Meta-learning
+import environment as env #for baseline_test
+
+from log_SimPy import *
+from log_RL import *
 import matplotlib.pyplot as plt
-from envs.simpy_envs.scenarios import *
+from scenarios import *
 from collections import Counter
 import pandas as pd
 
@@ -24,7 +22,6 @@ class MetaEnv(Env):
     def __init__(self):
         self.actions = []
 
-        
         self.all_tasks = create_scenarios()
         #print("Tensorboard Directory: :", TENSORFLOW_LOGS)
         super(MetaEnv, self).__init__()

@@ -1,6 +1,6 @@
-from Sampler.base import Sampler
-from Utils.vectorized_env_executor import MetaParallelEnvExecutor, MetaIterativeEnvExecutor
-from Utils import utils
+from AIIS_META.Sampler.base import Sampler
+from AIIS_META.Utils.vectorized_env_executor import MetaParallelEnvExecutor, MetaIterativeEnvExecutor
+from AIIS_META.Utils import utils
 from collections import OrderedDict
 
 from pyprind import ProgBar
@@ -32,10 +32,17 @@ class MetaSampler(Sampler):
             envs_per_task=None,
             parallel=False
             ):
-        super(MetaSampler, self).__init__(env, policy, rollout_per_task, max_path_length)
+        super(MetaSampler, self).__init__(env,
+            policy,
+            rollout_per_task,
+            meta_batch_size,
+            max_path_length,
+            envs_per_task=None,
+            parallel=False)
         assert hasattr(env, 'set_task')
         self.envs_per_task = rollout_per_task if envs_per_task is None else envs_per_task
         self.meta_batch_size = meta_batch_size
+        self.rollout_per_task = rollout_per_task
         self.total_samples = meta_batch_size * rollout_per_task * max_path_length
         self.parallel = parallel
         self.total_timesteps_sampled = 0
@@ -66,7 +73,7 @@ class MetaSampler(Sampler):
         Returns: 
             (dict) : A dict of paths of size [meta_batch_size] x (batch_size) x [5] x (max_path_length)
         """
-
+        self.update_tasks()
         # initial setup / preparation
         paths = OrderedDict()
         for i in range(self.meta_batch_size):
@@ -84,32 +91,30 @@ class MetaSampler(Sampler):
             # execute policy
             t = time.time()
             obs_per_task = np.split(np.asarray(obses), self.meta_batch_size)
-            
             # ---- (2) 태스크별 파라미터를 "직접 덮어쓴" 뒤, 해당 블록에 대한 액션 배치 계산 ----
             actions_blocks = []      # 각 원소 shape: [envs_per_task, act_dim]
             agent_infos_blocks = []  # 길이 = meta_batch_size * envs_per_task, 각 원소 dict
-
             for task_idx in range(self.meta_batch_size):
                 # (a) 정책 파라미터를 해당 태스크의 params로 덮어쓰기
                 self.policy.load_state_dict(params_per_task[task_idx], strict=False)
-
-                # (b) 단일 태스크 배치에 대한 액션/정보 계산
-                #     정책에 act_batch(obs_block) 메서드가 있어야 한다.
-                #     반환: actions_j [envs_per_task, act_dim], infos_j (list of dict, len=envs_per_task)
-                actions_j, infos_j = self.policy.act_batch(obs_per_task[task_idx])
-                actions_blocks.append(actions_j)
-                agent_infos_blocks.extend(infos_j)
-
+                infos_per_task = []
+                for batch_id in range(self.rollout_per_task):
+                    # (b) 단일 태스크 배치에 대한 액션/정보 계산
+                    #     정책에 act_batch(obs_block) 메서드가 있어야 한다.
+                    #     반환: actions_j [envs_per_task, act_dim], infos_j (list of dict, len=envs_per_task)
+                    actions_j, infos_j = self.policy.get_action(obs_per_task[task_idx][batch_id])
+                    actions_blocks.append(actions_j)
+                    infos_per_task.append(infos_j)
+                agent_infos_blocks.append(infos_per_task)
             # step environments
             t = time.time()
-            actions = np.concatenate(actions) # stack meta batch
-            next_obses, rewards, dones, env_infos = self.vec_env.step(actions)
+            next_obses, rewards, dones, env_infos = self.vec_env.step(actions_blocks)
 
             #  stack agent_infos and if no infos were provided (--> None) create empty dicts
-            agent_infos, env_infos = self._handle_info_dicts(agent_infos, env_infos)
+            agent_infos, env_infos = self._handle_info_dicts(agent_infos_blocks, env_infos)
 
             new_samples = 0
-            for idx, observation, action, reward, env_info, agent_info, done in zip(itertools.count(), obses, actions,
+            for idx, observation, action, reward, env_info, agent_info, done in zip(itertools.count(), obses, actions_blocks,
                                                                                     rewards, env_infos, agent_infos,
                                                                                     dones):
                 # append new samples to running paths

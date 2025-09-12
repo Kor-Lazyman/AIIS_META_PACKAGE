@@ -4,6 +4,24 @@ import scipy.signal
 import json
 import torch
 from typing import Dict, List, Tuple, Optional
+def stack_tensor_dict_list(tensor_dict_list):
+    """
+    Args:
+        tensor_dict_list (list) : list of dicts of tensors
+
+    Returns:
+        (dict) : dict of lists of tensors
+    """
+    keys = list(tensor_dict_list[0].keys())
+    ret = dict()
+    for k in keys:
+        example = tensor_dict_list[0][k]
+        if isinstance(example, dict):
+            v = stack_tensor_dict_list([x[k] for x in tensor_dict_list])
+        else:
+            v = np.asarray([x[k] for x in tensor_dict_list])
+        ret[k] = v
+    return ret
 
 def to_tensor(self, x):
         if isinstance(x, torch.Tensor):
@@ -48,13 +66,13 @@ def discount_cumsum(x, discount):
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
-def clone_params(self, from_params: Optional[Dict[str, torch.Tensor]] = None, num_tasks = 1
+def clone_params(policy, from_params: Optional[Dict[str, torch.Tensor]] = None, num_tasks = 1
                      ) -> Dict[str, torch.Tensor]:
         parm_list = []
         """파라미터 dict를 복제해 gradient 대상 텐서로 준비"""
         for x in range(num_tasks):
             if from_params is None:
-                src = dict(self.policy.named_parameters())
+                src = dict(policy.named_parameters())
             else:
                 src = from_params
             parm_list.append({n: p.clone().detach().requires_grad_(True) for n, p in src.items()})

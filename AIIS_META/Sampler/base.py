@@ -1,5 +1,5 @@
 # sample_processor_refactored.py
-from Utils import utils
+from AIIS_META.Utils import utils
 import numpy as np
 import torch
 
@@ -14,11 +14,18 @@ class Sampler(object):
         max_path_length (int) : max number of steps per trajectory
     """
 
-    def __init__(self, env, policy, batch_size, max_path_length):
+    def __init__(self,
+            env,
+            policy,
+            rollout_per_task,
+            meta_batch_size,
+            max_path_length,
+            envs_per_task=None,
+            parallel=False):
         assert hasattr(env, 'reset') and hasattr(env, 'step')
         self.env = env
         self.policy = policy
-        self.batch_size = batch_size
+        self.batch_size = meta_batch_size
         self.max_path_length = max_path_length
 
     def obtain_samples(self):

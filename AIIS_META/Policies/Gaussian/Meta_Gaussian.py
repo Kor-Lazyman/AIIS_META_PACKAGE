@@ -3,7 +3,7 @@ import torch
 from torch.distributions.independent import Independent
 from typing import List, Dict, Optional, Tuple
 
-from Gaussian import GaussianPolicy  # 기존 구현 사용
+from .Gaussian import GaussianPolicy  # 기존 구현 사용
 
 class MetaGaussianPolicy(GaussianPolicy):
     def __init__(self, meta_batch_size: int, *args, **kwargs):
@@ -11,7 +11,7 @@ class MetaGaussianPolicy(GaussianPolicy):
         self.meta_batch_size = meta_batch_size
         self._pre_update_mode = True
         self.policies_params_vals: Optional[List[Dict[str, torch.Tensor]]] = None
-
+        print("gaussian policy ready")
     def set_pre_update_mode(self, flag: bool = True):
         self._pre_update_mode = flag
         if flag:
@@ -52,13 +52,6 @@ class MetaGaussianPolicy(GaussianPolicy):
           }
         """
         # 입력 정리: single observation 형태로 맞춤
-        if observation.dim() == 1:
-            observation = observation.unsqueeze(0)   # [1, obs_dim]
-        elif observation.dim() == 2 and observation.size(0) == 1:
-            pass
-        else:
-            raise ValueError("get_action expects a single observation [obs_dim] or [1, obs_dim].")
-
         # 분포 선택: pre/post update
         if self._pre_update_mode:
             dist = self.distribution(observation)   # Independent(Normal(mean,[1,out_dim]), 1)
@@ -89,14 +82,13 @@ class MetaGaussianPolicy(GaussianPolicy):
         logp_per_dim = logp_per_dim_b.squeeze(0)                        # [out_dim]
 
         # per-dim structured info (you can keep tensors or convert to python scalars .item())
-        per_dim = []
-        for i in range(self.out_dim):
-            per_dim.append({
-                "mean": mean[i],              # tensor scalar
-                "std": std[i],                # tensor scalar
-                "action": actions[i],         # tensor scalar
-                "logp": logp_per_dim[i],      # tensor scalar
-            })
+
+        per_dim={"mean": mean,              # tensor scalar
+                "std": std,                # tensor scalar
+                "action": actions,         # tensor scalar
+                "logp": logp_per_dim,      # tensor scalar
+                }
+
 
 
         return actions, per_dim

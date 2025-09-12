@@ -12,17 +12,17 @@ import torch.nn as nn
 from torch.distributions.normal import Normal
 from torch.distributions.independent import Independent
 from torch.func import functional_call
-from typing import Optional, Dict, Tuple
+from typing import Sequence, Type, List, Dict, Optional, Tuple
 
-from base import BasePolicy  # 사용 중인 base 인터페이스에 맞춰져 있어야 함
+from AIIS_META.Policies.base import BasePolicy  # 사용 중인 base 인터페이스에 맞춰져 있어야 함
 
 
-def build_mlp(in_dim: int, hidden: tuple, activation: type) -> tuple:
+def build_mlp(in_dim: int, hidden: tuple) -> tuple:
     layers = []
     d = in_dim
     for h in hidden:
         layers.append(nn.Linear(d, h))
-        layers.append(activation())
+        layers.append(nn.Tanh())
         d = h
     return nn.Sequential(*layers), d
 
@@ -42,7 +42,6 @@ class GaussianPolicy(BasePolicy):
                  obs_dim: int,
                  out_dim: int,
                  hidden: tuple = (64, 64),
-                
                  learn_std: bool = True,
                  init_std: float = 1.0,
                  min_std: float = 1e-6,
@@ -52,18 +51,16 @@ class GaussianPolicy(BasePolicy):
         super().__init__(obs_dim=obs_dim,
                          out_dim=total_out_dim,
                          hidden=hidden,
-                         activation=nn.Tanh,
                          build_backbone=False,
                          has_value_fn=has_value_fn)
 
         self.obs_dim = obs_dim
         self.out_dim = total_out_dim
-        self.activation = nn.Tanh,
         self.state_dependent_std = bool(state_dependent_std)
         self.min_log_std = float(torch.log(torch.tensor(min_std)))
 
         # backbone
-        self.backbone, feat_dim = build_mlp(obs_dim, hidden, self.activation)
+        self.backbone, feat_dim = build_mlp(obs_dim, hidden)
 
         # head: if state_dependent_std -> output 2*out_dim, else output out_dim (mean)
         head_out = self.out_dim
@@ -106,6 +103,10 @@ class GaussianPolicy(BasePolicy):
         """
         Returns a single Independent Normal distribution over out_dim.
         """
+        device = self.backbone[0].weight.device
+        dtype  = self.backbone[0].weight.dtype
+        obs = torch.as_tensor(obs, device=device, dtype=dtype)
+        
         feat = self.backbone(obs)
         out = self.head(feat)
         if self.state_dependent_std:

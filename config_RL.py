@@ -1,6 +1,6 @@
 import os
 import shutil
-from envs.simpy_envs.config_SimPy import *
+from config_SimPy import *
 
 # RL algorithms
 RL_ALGORITHM = "PPO"  # "DP", "DQN", "DDPG", "PPO", "SAC"

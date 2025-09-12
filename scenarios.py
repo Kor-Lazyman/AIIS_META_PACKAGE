@@ -1,5 +1,5 @@
-from envs.simpy_envs.config_SimPy import *
-from envs.simpy_envs.config_RL import *
+from config_SimPy import *
+from config_RL import *
 import itertools
 import random
 import numpy as np

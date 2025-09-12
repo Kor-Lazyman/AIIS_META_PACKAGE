@@ -2,8 +2,7 @@
 import torch
 import torch.nn as nn
 from typing import Dict, List, Tuple, Optional
-from Utils import utils  # rollout 등 외부 유틸 사용 가정
-from Sampler import meta_sampler as sampler
+from AIIS_META.Sampler.meta_sampler import MetaSampler as sampler
 class MAML_BASE(nn.Module):
     """
     MAML 틀:
@@ -12,18 +11,19 @@ class MAML_BASE(nn.Module):
       - learn: 위 두 함수를 호출만 (orchestration)
     """
     def __init__(self,
-                 env,
-                 max_path_length,
-                 policy: nn.Module,
-                 alpha: float = 1e-3,     # inner lr
-                 beta: float = 1e-3,      # outer lr
-                 inner_grad_steps: int = 1,
-                 num_tasks: int = 4,
-                 parallel = False,
-                 rollout_per_task = 5,
-                 clip_eps: float = 0.2,
-                 init_inner_kl_penalty: float = 1e-2,
-                 device = torch.device('cuda')):
+                env,
+                max_path_length,
+                policy: nn.Module,
+                alpha: float = 1e-3,     # inner lr
+                beta: float = 1e-3,      # outer lr
+                inner_grad_steps: int = 1,
+                num_tasks: int = 4,
+                outer_iters: int = 5,
+                parallel = False,
+                rollout_per_task = 5,
+                clip_eps: float = 0.2,
+                init_inner_kl_penalty: float = 1e-2,
+                device = torch.device('cuda')):
         super().__init__()
         self.env = env
         self.policy = policy
@@ -31,6 +31,7 @@ class MAML_BASE(nn.Module):
         self.beta = beta
         self.inner_grad_steps = inner_grad_steps
         self.num_tasks = num_tasks
+        self.outer_iters = outer_iters
         self.rollout_per_task = rollout_per_task
         self.clip_eps = clip_eps
         self.inner_kl_coeff = torch.full((inner_grad_steps,), init_inner_kl_penalty)
@@ -158,16 +159,16 @@ class MAML_BASE(nn.Module):
         return torch.stack(losses).mean().item() if losses else 0.0
 
     # --------- 학습 루프(오케스트레이션) ---------
-    def learn(self, total_iters: int):
+    def learn(self, epochs):
         """
         learn은 inner/outer 호출만 담당:
           1) inner_loop(...) -> adapted_params_list
           2) outer_loop(...) -> meta-parameter update
         """
-        for _ in range(total_iters):
+        for _ in range(epochs):
             # 1) inner: meta-parameter -> adapted params
             base_params = dict(self.policy.named_parameters())
             adapted_params_per_task, paths = self.inner_loop(task_ids=None, base_params=base_params)
-
-            # 2) outer: adapted params로 meta-parameter 업데이트
-            _ = self.outer_loop(paths, adapted_params_per_task)
+            for x in range(self.outer_iters):
+                # 2) outer: adapted params로 meta-parameter 업데이트
+                _ = self.outer_loop(paths, adapted_params_per_task)

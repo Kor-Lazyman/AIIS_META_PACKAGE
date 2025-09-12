@@ -3,7 +3,6 @@ import pickle as pickle
 from multiprocessing import Process, Pipe
 import copy
 
-
 class MetaIterativeEnvExecutor(object):
     """
     Wraps multiple environments of the same kind and provides functionality to reset / step the environments
@@ -35,7 +34,6 @@ class MetaIterativeEnvExecutor(object):
              (assumes that every task has same number of envs)
         """
         assert len(actions) == self.num_envs
-
         all_results = [env.step(a) for (a, env) in zip(actions, self.envs)]
 
         # stack results split to obs, rewards, ...

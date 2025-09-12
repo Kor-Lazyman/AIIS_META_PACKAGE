@@ -1,4 +1,4 @@
-from Baselines.base import Baseline
+from .base import Baseline
 import numpy as np
 
 

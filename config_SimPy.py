@@ -533,7 +533,7 @@ SIM_TIME = 200 # Default: 200 [days] per episode
 
 # Print logs
 PRINT_SIM = False
-ASSEMBLY_PROCESS = "AP1"
+ASSEMBLY_PROCESS = "AP2"
 SSPOLICY = True
 STATIONARY = False
 NUM_OF_TEST = 1
