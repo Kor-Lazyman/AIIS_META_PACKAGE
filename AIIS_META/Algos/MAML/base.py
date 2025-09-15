@@ -7,6 +7,8 @@ from typing import Dict, List, Tuple, Optional
 from AIIS_META.Sampler.meta_sampler import MetaSampler as sampler
 from AIIS_META.Sampler.base import SampleProcessor
 from AIIS_META.Baselines import linear_baseline
+import copy
+from contextlib import contextmanager
 
 class MAML_BASE(nn.Module):
     """
@@ -75,7 +77,20 @@ class MAML_BASE(nn.Module):
             if base_grads[n] is not None:
                 p.grad = base_grads[n] * scale
         self.optimizer.step()
-    
+    # --------- 학습 루프(오케스트레이션) ---------
+    def learn(self, epochs):
+        """
+        learn은 inner/outer 호출만 담당:
+          1) inner_loop(...) -> adapted_params_list
+          2) outer_loop(...) -> meta-parameter update
+        """
+        for _ in range(epochs):
+            # 1) inner: meta-parameter -> adapted params
+            base_params = dict(self.policy.named_parameters())
+            adapted_params_per_task, paths = self.inner_loop(task_ids=None, base_params=base_params)
+            for x in range(self.outer_iters):
+                # 2) outer: adapted params로 meta-parameter 업데이트
+                _ = self.outer_loop(paths, adapted_params_per_task)
 
     # --------- inner / outer 분리 ---------
     def inner_loop(self,
@@ -136,16 +151,24 @@ class MAML_BASE(nn.Module):
                     # loss의 평균
                     loss_in = loss_sum / float(max(count, 1))
                     # gradient update
-                    grads = torch.autograd.grad(
-                        loss_in, list(params_i.values()),
-                        create_graph=False, allow_unused=True
+                    with self._temp_params(params_i):
+                        # 현재 params_i가 policy에 로드된 상태에서 loss 기준 grad 계산
+                        grads = torch.autograd.grad(
+                            loss_in,
+                            [p for p in self.policy.parameters() if p.requires_grad],
+                            create_graph=False, allow_unused=True
+                        )
+
+                    # '가상' 업데이트된 다음 스텝 state 생성 (policy에는 적용 X)
+                    params_list[i] = self._apply_grads_to_state(
+                        base_state=params_i, grads=grads, lr=self.alpha
                     )
                     for (name, p), g in zip(params_i.items(), grads):
                         params_list[i][name] = p - self.alpha * g if g is not None else p
                     # inner parameter 저장
                     adapted_params_per_task.append(params_list[i])
 
-        return adapted_params_per_task, paths
+        return adapted_params_per_task, paths 
     
     def outer_loop(self, paths, adapted_params_list):
         base_grads = {n: torch.zeros_like(p) for n, p in self.policy.named_parameters()}
@@ -157,17 +180,25 @@ class MAML_BASE(nn.Module):
             assert len(traj_list) >= 1
             batch = traj_list
 
-            loss_out = self.outer_obj(batch, params)         # 태스크별 배치로 메타손실
-            losses.append(loss_out.detach())
-
-            grads_t = torch.autograd.grad(loss_out, tuple(params.values()),
-                                        create_graph=False, allow_unused=True)
-            for (name, _), g in zip(params.items(), grads_t):
-                if g is not None:
+            with self._temp_params(params):
+                loss_out = self.outer_obj(batch, params)     # 현재 모듈 파라미터 기준
+                losses.append(loss_out.detach())
+                grads_t = torch.autograd.grad(
+                    loss_out,
+                    [p for p in self.policy.parameters() if p.requires_grad],
+                    create_graph=False, allow_unused=True
+                )
+            for (name, p), g in zip(self.policy.named_parameters(), grads_t):
+                if p.requires_grad and g is not None:
                     base_grads[name] += g
 
+        # 메타 파라미터 업데이트(평균)
         self.apply_base_grads(base_grads, scale=1.0/len(adapted_params_list))
         return torch.stack(losses).mean().item() if losses else 0.0
+
+
+    # ===============Utils===============
+
     def _stack_trajs(self, trajs, *, adv_key: str = "advantages"):
         """
         trajs: List[dict], 각 dict 예:
@@ -260,17 +291,71 @@ class MAML_BASE(nn.Module):
             }
         }
         return batch
-    # --------- 학습 루프(오케스트레이션) ---------
-    def learn(self, epochs):
+    def clone_params(self, from_params: Optional[Dict[str, torch.Tensor]] = None, num_tasks: int = 1
+                     ) -> List[Dict[str, torch.Tensor]]:
         """
-        learn은 inner/outer 호출만 담당:
-          1) inner_loop(...) -> adapted_params_list
-          2) outer_loop(...) -> meta-parameter update
+        state_dict 기반 복제. 이후 모든 교체/주입은 load_state_dict를 통해 일관 처리.
         """
-        for _ in range(epochs):
-            # 1) inner: meta-parameter -> adapted params
-            base_params = dict(self.policy.named_parameters())
-            adapted_params_per_task, paths = self.inner_loop(task_ids=None, base_params=base_params)
-            for x in range(self.outer_iters):
-                # 2) outer: adapted params로 meta-parameter 업데이트
-                _ = self.outer_loop(paths, adapted_params_per_task)
+        base = self._snapshot_state() if from_params is None else {k: v.detach().clone() for k, v in from_params.items()}
+        return [{k: v.detach().clone() for k, v in base.items()} for _ in range(num_tasks)]
+
+    def apply_base_grads(self, base_grads: Dict[str, torch.Tensor], scale: float = 1.0):
+        """누적된 meta-gradient를 실제 파라미터에 적용"""
+        self.optimizer.zero_grad()
+        for n, p in self.policy.named_parameters():
+            # None 가드 (일부 파라미터에 grad가 없을 수 있음)
+            if base_grads[n] is not None:
+                p.grad = base_grads[n] * scale
+        self.optimizer.step()
+    
+    def to_tensor(self, x):
+        if isinstance(x, torch.Tensor):
+            return x.to(self.device)
+        import numpy as np
+        if isinstance(x, (list, tuple)):
+            x = np.asarray(x)
+        return torch.as_tensor(x, device=self.device)
+
+    # >>> CHANGED: 아래 3개 유틸 추가 (state_dict 스냅샷/임시적용/가상업데이트)
+    def _snapshot_state(self) -> Dict[str, torch.Tensor]:
+        """현재 policy state_dict를 디프 카피."""
+        return {k: v.detach().clone() for k, v in self.policy.state_dict().items()}
+
+    @contextmanager
+    def _temp_params(self, state: Dict[str, torch.Tensor]):
+        """
+        컨텍스트 동안만 state를 policy에 로드했다가 종료 시 원복.
+        나머지 로직(샘플링/로스계산)은 그대로.
+        """
+        prev = self._snapshot_state()
+        self.policy.load_state_dict(state, strict=False)
+        try:
+            yield
+        finally:
+            self.policy.load_state_dict(prev, strict=False)
+
+    def _apply_grads_to_state(self, base_state: Dict[str, torch.Tensor],
+                              grads: List[Optional[torch.Tensor]],
+                              lr: float) -> Dict[str, torch.Tensor]:
+        """
+        named_parameters() 순서의 grads를 받아 base_state에 '가상으로' 한 스텝 업데이트한
+        새로운 state_dict 반환 (policy에는 적용 안 함).
+        """
+        new_state: Dict[str, torch.Tensor] = {}
+        # 파라미터
+        i = 0
+        for name, p in self.policy.named_parameters():
+            g = grads[i]; i += 1
+            if g is None:
+                new_state[name] = base_state[name].detach().clone()
+            else:
+                new_state[name] = (base_state[name] - lr * g.detach()).clone()
+        # 버퍼(예: running stats 등) 그대로 복사
+        for name, buf in self.policy.named_buffers():
+            new_state[name] = base_state[name].detach().clone()
+        # 혹시 빠진 키 있으면 보완
+        for k, v in base_state.items():
+            if k not in new_state:
+                new_state[k] = v.detach().clone()
+        return new_state
+

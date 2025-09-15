@@ -66,17 +66,6 @@ def discount_cumsum(x, discount):
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
-def clone_params(policy, from_params: Optional[Dict[str, torch.Tensor]] = None, num_tasks = 1
-                     ) -> Dict[str, torch.Tensor]:
-        parm_list = []
-        """파라미터 dict를 복제해 gradient 대상 텐서로 준비"""
-        for x in range(num_tasks):
-            if from_params is None:
-                src = dict(policy.named_parameters())
-            else:
-                src = from_params
-            parm_list.append({n: p.clone().detach().requires_grad_(True) for n, p in src.items()})
-        return parm_list
 '''
 def get_original_tf_name(name):
     """

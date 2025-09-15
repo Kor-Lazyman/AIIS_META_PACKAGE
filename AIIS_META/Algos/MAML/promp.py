@@ -83,7 +83,7 @@ class ProMP(MAML_BASE):
 
     # ----- inner_loop 오버라이드: step별 KL 측정/계수 적응/클립 앤닐 -----
     def inner_loop(self, base_params: Dict[str, torch.Tensor]):
-        params_list = clone_params(self.policy, base_params, num_tasks=self.num_tasks)
+        params_list = self.clone_params(base_params, num_tasks=self.num_tasks)
         inner_kls_per_step = torch.zeros(self.inner_grad_steps, device=self.device)
 
         for step in range(self.inner_grad_steps + 1):
@@ -98,6 +98,7 @@ class ProMP(MAML_BASE):
                     self._adapt_inner_kl_coeff(self._last_inner_kls, self.target_kl_diff)
                 self.anneal_coeff *= self.anneal_factor
                 return adapted, paths
+            
             # 각 태스크 inner 업데이트 + 이번 스텝 KL 측정
             for t in range(self.num_tasks):
                 self.sample_processor.process_samples(paths[t], self.policy)
