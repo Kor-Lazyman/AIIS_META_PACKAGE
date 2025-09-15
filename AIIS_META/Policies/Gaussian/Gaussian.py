@@ -41,6 +41,7 @@ class GaussianPolicy(BasePolicy):
     def __init__(self,
                  obs_dim: int,
                  out_dim: int,
+                 gamma: float = 0.99,
                  hidden: tuple = (64, 64),
                  learn_std: bool = True,
                  init_std: float = 1.0,
@@ -56,6 +57,7 @@ class GaussianPolicy(BasePolicy):
 
         self.obs_dim = obs_dim
         self.out_dim = total_out_dim
+        self.gamma = gamma
         self.state_dependent_std = bool(state_dependent_std)
         self.min_log_std = float(torch.log(torch.tensor(min_std)))
 
@@ -106,7 +108,7 @@ class GaussianPolicy(BasePolicy):
         device = self.backbone[0].weight.device
         dtype  = self.backbone[0].weight.dtype
         obs = torch.as_tensor(obs, device=device, dtype=dtype)
-        
+
         feat = self.backbone(obs)
         out = self.head(feat)
         if self.state_dependent_std:

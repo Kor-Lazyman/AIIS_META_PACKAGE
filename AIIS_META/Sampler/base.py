@@ -67,13 +67,13 @@ class SampleProcessor(object):
         self.normalize_adv = normalize_adv
         self.positive_adv = positive_adv
 
-    def process_samples(self, paths, policy, baseline=None, use_adv_formula=False):
-
+    def process_samples(self, paths, policy, use_adv_formula=False):
         for path in paths:
             rewards = path["rewards"]
-            returns = utils.discount_cumsum(rewards, gamma=self.gamma)
+            returns = utils.discount_cumsum(rewards, discount=self.discount)
             path["returns"] = returns
-
+            
+        for path in paths:
             if "advantages" in path:
                 continue
 
@@ -84,15 +84,15 @@ class SampleProcessor(object):
 
             if use_adv_formula:
                 # [NOTE] baseline 없으면 np.zeros 대신 오류 반환이 더 안전
-                if baseline is None:
+                if self.baseline is None:
                     raise ValueError("GAE requires baseline for values.")
-                values = baseline.predict(path)
-                path["advantages"] = utils.compute_gae(rewards, values, gamma=self.gamma, lam=self.lam)
+                values = self.baseline.predict(path)
+                path["advantages"] = utils.compute_gae(rewards, values, gamma=policy.gamma, lam=self.lam)
                 continue
 
-            if baseline is not None:
-                baseline.fit(paths)
-                values = baseline.predict(path)
+            if self.baseline is not None:
+                self.baseline.fit(paths)
+                values = self.baseline.predict(path)
                 path["advantages"] = returns - values
                 continue
 

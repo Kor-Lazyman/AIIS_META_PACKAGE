@@ -1,5 +1,4 @@
-from Sampler.base import SampleProcessor
-from Utils import utils
+from AIIS_META.Sampler.base import SampleProcessor
 import numpy as np
 
 class MetaSampleProcessor(SampleProcessor):
@@ -21,13 +20,11 @@ class MetaSampleProcessor(SampleProcessor):
         Returns:
             (list of dicts) : Processed sample data among the meta-batch; size: [meta_batch_size] x [7] x (batch_size x max_path_length)
         """
-        assert isinstance(paths_meta_batch, dict), 'paths must be a dict'
-        assert self.baseline, 'baseline must be specified'
 
         samples_data_meta_batch = []
         all_paths = []
 
-        for meta_task, paths in paths_meta_batch.items():
+        for paths in paths_meta_batch:
 
             # fits baseline, compute advantages and stack path data
             samples_data, paths = self.process_samples(paths)

@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
+from torch.distributions.independent import Independent
+from torch.distributions.normal import Normal
 from typing import Dict, List, Tuple, Optional
 from AIIS_META.Sampler.meta_sampler import MetaSampler as sampler
+from AIIS_META.Sampler.base import SampleProcessor
+from AIIS_META.Baselines import linear_baseline
+
 class MAML_BASE(nn.Module):
     """
     MAML 틀:
@@ -23,6 +28,7 @@ class MAML_BASE(nn.Module):
                 rollout_per_task = 5,
                 clip_eps: float = 0.2,
                 init_inner_kl_penalty: float = 1e-2,
+                baseline =  linear_baseline.LinearFeatureBaseline(),
                 device = torch.device('cuda')):
         super().__init__()
         self.env = env
@@ -36,6 +42,8 @@ class MAML_BASE(nn.Module):
         self.clip_eps = clip_eps
         self.inner_kl_coeff = torch.full((inner_grad_steps,), init_inner_kl_penalty)
         self.device = device
+
+        self.sample_processor = SampleProcessor(baseline = baseline)
 
         self.sampler = sampler(self.env,
             self.policy,
@@ -98,7 +106,9 @@ class MAML_BASE(nn.Module):
                 # task별 준비
                 for i in range(self.num_tasks):
                     params_i = params_list[i]
+                    self.sample_processor.process_samples(paths_by_task[i], self.policy)
                     traj_list = paths_by_task[i]
+                    
                     assert len(traj_list) >= 1, f"Task index {i} has no trajectories."
 
                     # (옵션) KL 측정이 필요하면 이 지점에서 수행 가능
@@ -119,6 +129,7 @@ class MAML_BASE(nn.Module):
                             "agent_infos":  traj.get("agent_infos", {}),
                             "task_index":   i,
                         }
+                        
                         # inner_obj를 통해 loss 계산(inner_obj는 custom 필요)
                         loss_sum = loss_sum + self.inner_obj(batch, params_i)
                         count += 1
@@ -157,7 +168,98 @@ class MAML_BASE(nn.Module):
 
         self.apply_base_grads(base_grads, scale=1.0/len(adapted_params_list))
         return torch.stack(losses).mean().item() if losses else 0.0
+    def _stack_trajs(self, trajs, *, adv_key: str = "advantages"):
+        """
+        trajs: List[dict], 각 dict 예:
+        {
+            "observations": (T, obs_dim) np.ndarray/torch.Tensor
+            "actions":      (T, act_dim) np.ndarray/torch.Tensor
+            "advantages":   (T,)         np.ndarray/torch.Tensor  # 없으면 adv_key로 찾음
+            "agent_infos":  dict or List[dict] with keys in {"mean","log_std","logp"}  # 선택
+        }
 
+        반환:
+        {
+            "observations":  (N, obs_dim) torch.FloatTensor
+            "actions":       (N, act_dim) torch.FloatTensor
+            "advantages":    (N,)         torch.FloatTensor
+            "agent_infos": {
+                "mean":      (N, act_dim) torch.FloatTensor      # old mean
+                "log_std":   (N, act_dim) torch.FloatTensor      # old log_std
+                "logp":      (N,)         torch.FloatTensor      # old log_prob(a|old)
+            },
+            "dist_info_old": {
+                "mean":      (N, act_dim) torch.FloatTensor,
+                "log_std":   (N, act_dim) torch.FloatTensor,
+            }
+        }
+        """
+        device = getattr(self, "device", torch.device("cpu"))
+
+        obs_list, act_list, adv_list = [], [], []
+        mean_list, logstd_list, logp_list = [], [], []
+
+        def to_t(x):
+            if isinstance(x, torch.Tensor):
+                return x.to(device=device, dtype=torch.float32)
+            return torch.as_tensor(x, device=device, dtype=torch.float32)
+        
+        for traj in trajs:
+            # 스텝 데이터
+            obs = to_t(traj["observations"])      # (T, obs_dim)
+            act = to_t(traj["actions"])           # (T, act_dim)
+            # advantages 가져오기
+            if adv_key in traj:
+                adv = to_t(traj[adv_key]).view(-1)                     # (T,)
+            elif "advantages" in traj:
+                adv = to_t(traj["advantages"]).view(-1)                # (T,)
+            else:
+                raise ValueError("advantages(혹은 지정한 adv_key)이 traj에 없습니다.")
+
+            # agent_infos 정규화: dict(T,dim) 혹은 list[dict] 모두 처리
+            agent_infos = traj.get("agent_infos", None)
+
+            if agent_infos is None:
+                # 반드시 old logp / mean / log_std가 필요하므로 에러
+                raise ValueError("agent_infos 없음: logp가 필요합니다.")
+
+            if isinstance(agent_infos, list):
+                # list[dict] -> dict(key -> stacked tensor)
+                keys = agent_infos[0].keys()
+                ai = {k: to_t([step[k] for step in agent_infos]) for k in keys}  # (T, ...)
+            elif isinstance(agent_infos, dict):
+                ai = {k: to_t(v) for k, v in agent_infos.items()}                # (T, ...)
+            else:
+                raise TypeError("agent_infos 형식이 dict 또는 list[dict]가 아닙니다.")
+
+
+            # old logp 확보 (없으면 mean/log_std로 계산)
+            if "logp" in ai:
+                logp_old = ai["logp"].view(-1)
+            
+            else:
+                raise ValueError("logp 없음: logp가 필요합니다.")
+            # 누적
+            obs_list.append(obs)
+            act_list.append(act)
+            adv_list.append(adv)
+            logp_list.append(logp_old)
+
+        # concat along time over all trajectories
+        observations = torch.cat(obs_list, dim=0)       # (N, obs_dim)
+        actions      = torch.cat(act_list, dim=0)       # (N, act_dim)
+        advantages   = torch.cat(adv_list, dim=0)       # (N,)
+        logp_old     = torch.cat(logp_list, dim=0)      # (N,)
+
+        batch = {
+            "observations": observations,
+            "actions":      actions,
+            "advantages":   advantages,
+            "agent_infos": {
+                "logp":    logp_old,
+            }
+        }
+        return batch
     # --------- 학습 루프(오케스트레이션) ---------
     def learn(self, epochs):
         """

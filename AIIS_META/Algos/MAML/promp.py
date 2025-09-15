@@ -88,7 +88,7 @@ class ProMP(MAML_BASE):
 
         for step in range(self.inner_grad_steps + 1):
             paths = self.sampler.obtain_samples(params_list)
-
+            
             if step == self.inner_grad_steps:
                 # outer에서 사용할 마지막 경로
                 adapted = [(t, params_list[t]) for t in range(self.num_tasks)]
@@ -98,12 +98,14 @@ class ProMP(MAML_BASE):
                     self._adapt_inner_kl_coeff(self._last_inner_kls, self.target_kl_diff)
                 self.anneal_coeff *= self.anneal_factor
                 return adapted, paths
-
             # 각 태스크 inner 업데이트 + 이번 스텝 KL 측정
             for t in range(self.num_tasks):
+                self.sample_processor.process_samples(paths[t], self.policy)
                 trajs = paths[t]
                 # (1) inner loss
                 batch = self._stack_trajs(trajs)  # obs/actions/advantages/agent_infos(logp=old)
+                
+                
                 loss_in = self.inner_obj(batch, params_list[t])
 
                 grads = torch.autograd.grad(loss_in,

@@ -28,6 +28,7 @@ class BasePolicy(nn.Module):
     def __init__(self,
                  obs_dim: int,
                  out_dim: int,
+                 gamma: float = 0.99,
                  hidden: Sequence[int] = (64, 64),
                  build_backbone: bool = True,
                  has_value_fn: bool = False):
@@ -36,7 +37,7 @@ class BasePolicy(nn.Module):
         self.obs_dim = obs_dim
         self.out_dim = out_dim
         self.hidden = tuple(hidden)
-
+        self.gamma = gamma
         # (옵션) 단순 MLP 백본. 정책에 따라 무시/재정의 가능.
         self.net: Optional[nn.Sequential] = None
         if build_backbone:
