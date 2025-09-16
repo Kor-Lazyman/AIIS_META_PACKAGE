@@ -9,14 +9,14 @@ class Sampler(object):
 
     Args:
         env (gym.Env) : environment object
-        policy : policy object
+        agent : agent object
         batch_size (int) : number of trajectories per task
         max_path_length (int) : max number of steps per trajectory
     """
 
     def __init__(self,
             env,
-            policy,
+            agent,
             rollout_per_task,
             meta_batch_size,
             max_path_length,
@@ -24,7 +24,7 @@ class Sampler(object):
             parallel=False):
         assert hasattr(env, 'reset') and hasattr(env, 'step')
         self.env = env
-        self.policy = policy
+        self.agent = agent
         self.batch_size = meta_batch_size
         self.max_path_length = max_path_length
 
@@ -67,19 +67,20 @@ class SampleProcessor(object):
         self.normalize_adv = normalize_adv
         self.positive_adv = positive_adv
 
-    def process_samples(self, paths, policy, use_adv_formula=False):
+    def process_samples(self, paths, agent, use_adv_formula=False):
         for path in paths:
             rewards = path["rewards"]
             returns = utils.discount_cumsum(rewards, discount=self.discount)
             path["returns"] = returns
             
         for path in paths:
+
             if "advantages" in path:
                 continue
 
-            if getattr(policy, "has_value_fn", False):
-                values = policy.value_function(torch.as_tensor(path["observations"], dtype=torch.float32))
-                path["advantages"] = returns - values.detach().cpu().numpy()
+            if getattr(agent, "has_value_fn", False):
+                values = agent.policy.value_function(torch.as_tensor(path["observations"], dtype=torch.float32))
+                path["advantages"] = returns - values.cpu().numpy()
                 continue
 
             if use_adv_formula:
@@ -87,7 +88,7 @@ class SampleProcessor(object):
                 if self.baseline is None:
                     raise ValueError("GAE requires baseline for values.")
                 values = self.baseline.predict(path)
-                path["advantages"] = utils.compute_gae(rewards, values, gamma=policy.gamma, lam=self.lam)
+                path["advantages"] = utils.compute_gae(rewards, values, gamma=agent.gamma, lam=self.lam)
                 continue
 
             if self.baseline is not None:
@@ -97,41 +98,3 @@ class SampleProcessor(object):
                 continue
 
             raise ValueError("No way to compute advantages!")
-
-
-    # -------- helpers --------
-    def _flatten_advantages_input(self, paths, advantages):
-        """external advantages를 일관된 1D로 변환"""
-        if isinstance(advantages, list):
-            # path 순서와 길이가 일치해야 함
-            assert len(advantages) == len(paths), "advantages 리스트 길이가 paths와 다릅니다."
-            return np.concatenate(advantages)
-        adv = np.asarray(advantages)
-        # 총 타임스텝과 길이 매칭 검증
-        total_T = sum(len(p["rewards"]) for p in paths)
-        assert adv.ndim == 1 and adv.shape[0] == total_T, \
-            f"advantages 크기 {adv.shape}가 총 타임스텝({total_T})과 다릅니다."
-        return adv
-
-    def _compute_advantages(self, paths, all_path_baselines):
-        """GAE(또는 0 baseline GAE)로 path['advantages'] 채움"""
-        assert len(paths) == len(all_path_baselines)
-        for idx, path in enumerate(paths):
-            # 한 스텝 더 붙여 bootstrap (말단 0)
-            path_baselines = np.append(all_path_baselines[idx], 0.0)
-            deltas = path["rewards"] + \
-                     self.discount * path_baselines[1:] - \
-                     path_baselines[:-1]
-            path["advantages"] = utils.discount_cumsum(
-                deltas, self.discount * self.gae_lambda)
-        return paths
-
-    def _stack_path_data(self, paths):
-        observations = np.concatenate([p["observations"] for p in paths])
-        actions      = np.concatenate([p["actions"] for p in paths])
-        rewards      = np.concatenate([p["rewards"] for p in paths])
-        returns      = np.concatenate([p["returns"] for p in paths])
-        advantages = np.concatenate([p["advantages"] for p in paths])
-        env_infos    = utils.concat_tensor_dict_list([p["env_infos"] for p in paths]) if "env_infos" in paths[0] else {}
-        agent_infos  = utils.concat_tensor_dict_list([p["agent_infos"] for p in paths]) if "agent_infos" in paths[0] else {}
-        return observations, actions, rewards, returns, advantages, env_infos, agent_infos

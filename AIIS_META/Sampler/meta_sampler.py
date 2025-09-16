@@ -15,7 +15,7 @@ class MetaSampler(Sampler):
 
     Args:
         env (meta_policy_search.envs.base.MetaEnv) : environment object
-        policy (meta_policy_search.policies.base.Policy) : policy object
+        policy (meta_policy_search.policies.base.Policy) : agent object
         batch_size (int) : number of trajectories per task
         meta_batch_size (int) : number of meta tasks
         max_path_length (int) : max number of steps per trajectory
@@ -25,7 +25,7 @@ class MetaSampler(Sampler):
     def __init__(
             self,
             env,
-            policy,
+            agent,
             rollout_per_task,
             meta_batch_size,
             max_path_length,
@@ -33,7 +33,7 @@ class MetaSampler(Sampler):
             parallel=False
             ):
         super(MetaSampler, self).__init__(env,
-            policy,
+            agent,
             rollout_per_task,
             meta_batch_size,
             max_path_length,
@@ -62,7 +62,7 @@ class MetaSampler(Sampler):
         assert len(tasks) == self.meta_batch_size
         self.vec_env.set_tasks(tasks)
 
-    def obtain_samples(self, params_per_task, log=False, log_prefix=''):
+    def obtain_samples(self, state_dict_per_task, log=False, log_prefix=''):
         """
         Collect batch_size trajectories from each task
 
@@ -88,7 +88,7 @@ class MetaSampler(Sampler):
         obses = self.vec_env.reset()
         task_id = 0
         while n_samples < self.total_samples:
-            # execute policy
+            # execute agent
             t = time.time()
             obs_per_task = np.split(np.asarray(obses), self.meta_batch_size)
             # ---- (2) 태스크별 파라미터를 "직접 덮어쓴" 뒤, 해당 블록에 대한 액션 배치 계산 ----
@@ -96,13 +96,13 @@ class MetaSampler(Sampler):
             agent_infos_blocks = []  # 길이 = meta_batch_size * envs_per_task, 각 원소 dict
             for task_idx in range(self.meta_batch_size):
                 # (a) 정책 파라미터를 해당 태스크의 params로 덮어쓰기
-                self.policy.load_state_dict(params_per_task[task_idx], strict=False)
+                self.agent.policy.load_state_dict(state_dict_per_task[task_idx], strict=False)
                 infos_per_task = []
                 for batch_id in range(self.rollout_per_task):
                     # (b) 단일 태스크 배치에 대한 액션/정보 계산
                     #     정책에 act_batch(obs_block) 메서드가 있어야 한다.
                     #     반환: actions_j [envs_per_task, act_dim], infos_j (list of dict, len=envs_per_task)
-                    actions_j, infos_j = self.policy.get_action(obs_per_task[task_idx][batch_id])
+                    actions_j, infos_j = self.agent.get_action(obs_per_task[task_idx][batch_id])
                     actions_blocks.append(actions_j)
                     infos_per_task.append(infos_j)
                 agent_infos_blocks.append(infos_per_task)
@@ -127,11 +127,11 @@ class MetaSampler(Sampler):
                 # if running path is done, add it to paths and empty the running path
                 if done:
                     paths[idx // self.envs_per_task].append(dict(
-                        observations=np.asarray(running_paths[idx]["observations"]),
-                        actions=np.asarray(running_paths[idx]["actions"]),
-                        rewards=np.asarray(running_paths[idx]["rewards"]),
-                        env_infos=utils.stack_tensor_dict_list(running_paths[idx]["env_infos"]),
-                        agent_infos=utils.stack_tensor_dict_list(running_paths[idx]["agent_infos"]),
+                        observations=running_paths[idx]["observations"],
+                        actions=running_paths[idx]["actions"],
+                        rewards=running_paths[idx]["rewards"],
+                        env_infos=running_paths[idx]["env_infos"],
+                        agent_infos=running_paths[idx]["agent_infos"],
                     ))
                     new_samples += len(running_paths[idx]["rewards"])
                     running_paths[idx] = _get_empty_running_paths_dict()

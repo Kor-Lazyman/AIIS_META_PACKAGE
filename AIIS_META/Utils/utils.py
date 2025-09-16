@@ -4,6 +4,7 @@ import scipy.signal
 import json
 import torch
 from typing import Dict, List, Tuple, Optional
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def stack_tensor_dict_list(tensor_dict_list):
     """
     Args:
@@ -19,17 +20,18 @@ def stack_tensor_dict_list(tensor_dict_list):
         if isinstance(example, dict):
             v = stack_tensor_dict_list([x[k] for x in tensor_dict_list])
         else:
-            v = np.asarray([x[k] for x in tensor_dict_list])
+            vals = [x[k] for x in tensor_dict_list]  # 각 x[k]는 torch.Tensor여야 함
+        v = torch.stack(vals, dim=0)             # ✅ grad 유지, shape: [N, ...]
         ret[k] = v
     return ret
 
-def to_tensor(self, x):
+def to_tensor(x):
         if isinstance(x, torch.Tensor):
-            return x.to(self.device)
+            return x.to(device)
         import numpy as np
         if isinstance(x, (list, tuple)):
             x = np.asarray(x)
-        return torch.as_tensor(x, device=self.device)
+        return torch.as_tensor(x, device=device)
 
 def compute_gae(rewards, values, gamma=0.99, lam=0.95):
     """
@@ -65,7 +67,19 @@ def discount_cumsum(x, discount):
         (float) : y[t] - discount*y[t+1] = x[t] or rev(y)[t] - discount*rev(y)[t-1] = rev(x)[t]
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
-
+def module_device_dtype(module):
+    # 1) 파라미터에서 추론
+    it = module.parameters()
+    first = next(it, None)
+    if first is not None:
+        return first.device, first.dtype
+    # 2) 버퍼에서 추론(예: running_mean 등)
+    itb = module.buffers()
+    firstb = next(itb, None)
+    if firstb is not None:
+        return firstb.device, firstb.dtype
+    # 3) 아무 것도 없으면 기본값
+    return torch.device("cpu"), torch.get_default_dtype()
 '''
 def get_original_tf_name(name):
     """

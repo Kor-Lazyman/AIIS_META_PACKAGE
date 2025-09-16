@@ -34,7 +34,7 @@ class MetaIterativeEnvExecutor(object):
              (assumes that every task has same number of envs)
         """
         assert len(actions) == self.num_envs
-        all_results = [env.step(a) for (a, env) in zip(actions, self.envs)]
+        all_results = [env.step(a.cpu()) for (a, env) in zip(actions, self.envs)]
 
         # stack results split to obs, rewards, ...
         obs, rewards, dones, env_infos = list(map(list, zip(*all_results)))
@@ -137,7 +137,7 @@ class MetaParallelEnvExecutor(object):
 
         results = [remote.recv() for remote in self.remotes]
 
-        obs, rewards, dones, env_infos = map(lambda x: sum(x, []), zip(*results))
+        obs, rewards, dones, env_infos = map(lambda x: sum(x, []).cpu(), zip(*results))
 
         return obs, rewards, dones, env_infos
 
