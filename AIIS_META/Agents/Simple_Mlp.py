@@ -13,7 +13,8 @@ class SimpleMLP(nn.Module):
   def __init__(self,
                 input_dim: int,
                 output_dim: int,
-                hidden_layers: list):
+                hidden_layers: list,
+                alpha: float = 1e-3):
       super().__init__()
       self.input_dim = input_dim
       self.output_dim = output_dim
@@ -28,7 +29,7 @@ class SimpleMLP(nn.Module):
           last = hidden_layers[layer_id]
       od[f"{len(hidden_layers)}"] = nn.Linear(last, output_dim)
       self.model =  nn.Sequential(od)
-  
+
   def value_function(self,
                       obs: torch.Tensor,
                       params: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:

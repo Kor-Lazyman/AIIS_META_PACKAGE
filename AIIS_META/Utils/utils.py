@@ -5,6 +5,73 @@ import json
 import torch
 from typing import Dict, List, Tuple, Optional
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def to_tensor(x):
+        if isinstance(x, torch.Tensor):
+            return x.to(device)
+        import numpy as np
+        if isinstance(x, (list, tuple)):
+            x = np.asarray(x)
+        return torch.as_tensor(x, device=device)
+
+def compute_gae(paths, all_path_values, gamma=0.99, lam=0.95):
+    """
+    paths: list of dict, 각 dict는 {"rewards": [...], "dones": [...], ...}
+    all_path_values: list of Tensor, 각 trajectory별 value predictions (길이 = T)
+    """
+    for idx, path in enumerate(paths):
+        rewards = torch.stack(path["rewards"])           # [T]
+        values  = all_path_values[idx]                   # [T]
+        dones   = torch.as_tensor(
+            path.get("dones", torch.zeros_like(rewards)),
+            device=values.device, dtype=values.dtype
+        )                                                # [T]
+
+        T = len(rewards)
+        advantages = torch.zeros(T, device=values.device, dtype=values.dtype)
+        gae = 0.0
+
+        # 뒤에서 앞으로
+        for t in reversed(range(T)):
+            if t == T - 1:  # 마지막 step → next_value=0
+                next_value = 0.0
+            else:
+                next_value = values[t+1]
+
+            delta = rewards[t] + gamma * next_value * (1 - dones[t]) - values[t]
+            gae = delta + gamma * lam * (1 - dones[t]) * gae
+            advantages[t] = gae
+
+        path["advantages"] = advantages
+        path["returns"] = advantages + values   # R_t = A_t + V(s_t)
+
+    return paths
+
+def discount_cumsum(rewards, discount):
+    if type(rewards[0]) != torch.tensor:
+        rewards[0] = to_tensor(rewards[0])
+    returns = [rewards[-1]]
+    for i in range(1, len(rewards)):
+        if type(rewards[-i]) != torch.tensor:
+            rewards[i] = to_tensor(rewards[-i])
+        returns.append(returns[-1]*discount + rewards[i-1])
+    returns.reverse()
+    return returns
+
+def module_device_dtype(module):
+    # 1) 파라미터에서 추론
+    it = module.parameters()
+    first = next(it, None)
+    if first is not None:
+        return first.device, first.dtype
+    # 2) 버퍼에서 추론(예: running_mean 등)
+    itb = module.buffers()
+    firstb = next(itb, None)
+    if firstb is not None:
+        return firstb.device, firstb.dtype
+    # 3) 아무 것도 없으면 기본값
+    return torch.device("cpu"), torch.get_default_dtype()
+
 def stack_tensor_dict_list(tensor_dict_list):
     """
     Args:
@@ -20,66 +87,9 @@ def stack_tensor_dict_list(tensor_dict_list):
         if isinstance(example, dict):
             v = stack_tensor_dict_list([x[k] for x in tensor_dict_list])
         else:
-            vals = [x[k] for x in tensor_dict_list]  # 각 x[k]는 torch.Tensor여야 함
-        v = torch.stack(vals, dim=0)             # ✅ grad 유지, shape: [N, ...]
-        ret[k] = v
+            v = [[x[k] for x in tensor_dict_list]]
+        ret[k] = v[0]
     return ret
-
-def to_tensor(x):
-        if isinstance(x, torch.Tensor):
-            return x.to(device)
-        import numpy as np
-        if isinstance(x, (list, tuple)):
-            x = np.asarray(x)
-        return torch.as_tensor(x, device=device)
-
-def compute_gae(rewards, values, gamma=0.99, lam=0.95):
-    """
-    Generalized Advantage Estimation (GAE)
-
-    Args:
-        rewards (np.ndarray): shape [T]
-        values  (np.ndarray): shape [T+1] (bootstrap value 포함)
-        gamma (float): discount factor
-        lam (float): GAE lambda
-
-    Returns:
-        advantages (np.ndarray): shape [T]
-
-    Note:
-        - values는 trajectory 길이 T보다 1 길어야 함
-          (마지막 값은 부트스트랩된 value)
-        - ProMP, PPO, A2C 등의 advantage 계산에 사용 가능
-    """
-    T = len(rewards)
-    adv = np.zeros(T, dtype=np.float32)
-    gae = 0.0
-    for t in reversed(range(T)):
-        delta = rewards[t] + gamma * values[t + 1] - values[t]
-        gae = delta + gamma * lam * gae
-        adv[t] = gae
-    return adv
-def discount_cumsum(x, discount):
-    """
-    See https://docs.scipy.org/doc/scipy/reference/tutorial/signal.html#difference-equation-filtering
-
-    Returns:
-        (float) : y[t] - discount*y[t+1] = x[t] or rev(y)[t] - discount*rev(y)[t-1] = rev(x)[t]
-    """
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
-def module_device_dtype(module):
-    # 1) 파라미터에서 추론
-    it = module.parameters()
-    first = next(it, None)
-    if first is not None:
-        return first.device, first.dtype
-    # 2) 버퍼에서 추론(예: running_mean 등)
-    itb = module.buffers()
-    firstb = next(itb, None)
-    if firstb is not None:
-        return firstb.device, firstb.dtype
-    # 3) 아무 것도 없으면 기본값
-    return torch.device("cpu"), torch.get_default_dtype()
 '''
 def get_original_tf_name(name):
     """

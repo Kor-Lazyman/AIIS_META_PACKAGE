@@ -1,5 +1,5 @@
 import torch
-from Policies.base import BasePolicy
+from Agents.base import BasePolicy
 
 
 class DummyPolicy(BasePolicy):

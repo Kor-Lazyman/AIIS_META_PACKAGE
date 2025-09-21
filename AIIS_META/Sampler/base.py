@@ -55,6 +55,7 @@ class SampleProcessor(object):
         gae_lambda=1.0,
         normalize_adv=False,
         positive_adv=False,
+        device = None,
     ):
         assert 0.0 <= discount <= 1.0, 'discount factor must be in [0,1]'
         assert 0.0 <= gae_lambda <= 1.0, 'gae_lambda must be in [0,1]'
@@ -66,35 +67,82 @@ class SampleProcessor(object):
         self.gae_lambda = gae_lambda
         self.normalize_adv = normalize_adv
         self.positive_adv = positive_adv
+        self.device = device
 
-    def process_samples(self, paths, agent, use_adv_formula=False):
-        for path in paths:
-            rewards = path["rewards"]
-            returns = utils.discount_cumsum(rewards, discount=self.discount)
-            path["returns"] = returns
-            
-        for path in paths:
+    def process_samples(self, paths, log=False, log_prefix=''):
+        """
+        Processes sampled paths. This involves:
+            - computing discounted rewards (returns)
+            - fitting baseline estimator using the path returns and predicting the return baselines
+            - estimating the advantages using GAE (+ advantage normalization id desired)
+            - stacking the path data
+            - logging statistics of the paths
 
-            if "advantages" in path:
-                continue
+        Args:
+            paths (list): A list of paths of size (batch_size) x [5] x (max_path_length)
+            log (boolean): indicates whether to log
+            log_prefix (str): prefix for the logging keys
 
-            if getattr(agent, "has_value_fn", False):
-                values = agent.policy.value_function(torch.as_tensor(path["observations"], dtype=torch.float32))
-                path["advantages"] = returns - values.cpu().numpy()
-                continue
+        Returns:
+            (dict) : Processed sample data of size [7] x (batch_size x max_path_length)
+        """
+        print(paths.keys())
+        print(type(paths))
+        assert type(paths) == list, 'paths must be a list'
+        assert paths[0].keys() >= {'observations', 'actions', 'rewards'}
+        assert self.baseline, 'baseline must be specified - use self.build_sample_processor(baseline_obj)'
 
-            if use_adv_formula:
-                # [NOTE] baseline 없으면 np.zeros 대신 오류 반환이 더 안전
-                if self.baseline is None:
-                    raise ValueError("GAE requires baseline for values.")
-                values = self.baseline.predict(path)
-                path["advantages"] = utils.compute_gae(rewards, values, gamma=agent.gamma, lam=self.lam)
-                continue
+        # fits baseline, compute advantages and stack path data
+        samples_data, paths = self._compute_samples_data(paths)
 
-            if self.baseline is not None:
-                self.baseline.fit(paths)
-                values = self.baseline.predict(path)
-                path["advantages"] = returns - values
-                continue
+        # 7) log statistics if desired
+        self._log_path_stats(paths, log=log, log_prefix='')
 
-            raise ValueError("No way to compute advantages!")
+        assert samples_data.keys() >= {'observations', 'actions', 'rewards', 'advantages', 'returns'}
+        return samples_data
+    
+    def _compute_samples_data(self, paths):
+        assert type(paths) == list
+
+        # 1) compute discounted rewards (returns)
+        for idx, path in enumerate(paths):
+            path["returns"] = utils.discount_cumsum(path["rewards"], self.discount)
+
+        # 2) fit baseline estimator using the path returns and predict the return baselines
+        self.baseline.fit(paths, target_key="returns")
+        all_path_baselines = [self.baseline.predict(path,self.device) for path in paths]
+        paths = utils.compute_gae(paths, all_path_baselines)
+        # 4) stack path data
+        observations, actions, rewards, returns, advantages, env_infos, agent_infos = self._stack_path_data(paths)
+        
+        # 5) if desired normalize / shift advantages
+        if self.normalize_adv:
+            advantages = utils.normalize_advantages(advantages)
+        if self.positive_adv:
+            advantages = utils.shift_advantages_to_positive(advantages)
+
+        # 6) create samples_data object
+        samples_data = dict(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            returns=returns,
+            advantages=advantages,
+            env_infos=env_infos,
+            agent_infos=agent_infos,
+        )
+
+        return samples_data, paths
+
+    
+    def _stack_path_data(self, paths):
+        observations = [path["observations"] for path in paths]
+        actions = [path["actions"] for path in paths]
+        rewards = [path["rewards"] for path in paths]
+        returns = [path["returns"] for path in paths]
+        advantages = [path["advantages"] for path in paths]
+        env_infos = [utils.stack_tensor_dict_list(path["env_infos"]) for path in paths]
+        agent_infos = [utils.stack_tensor_dict_list(path["agent_infos"]) for path in paths]
+
+        return observations, actions, rewards, returns, advantages, env_infos, agent_infos
+ 

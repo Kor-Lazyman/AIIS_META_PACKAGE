@@ -5,7 +5,7 @@ import torch.nn as nn
 from typing import Sequence, Type, List, Dict, Optional, Tuple
 from collections import OrderedDict
 
-class BasePolicy(nn.Module):
+class BaseAgent(nn.Module):
   """
   알고리즘(ProMP 등)이 기대하는 최소 정책 API를 한 클래스에 통합.
 
@@ -28,7 +28,8 @@ class BasePolicy(nn.Module):
   def __init__(self,
                policy,
                 gamma: float = 0.99,
-                has_value_fn: bool = False):
+                has_value_fn: bool = False,
+                need_probs: bool = False):
       super().__init__()
       self.policy = policy
       self.gamma = gamma
@@ -36,10 +37,10 @@ class BasePolicy(nn.Module):
 
   # ---------------------- 최소 API (알고리즘이 의존) ----------------------
   torch.no_grad()
-  def get_action(self,
+  def get_actions(self,
                   observation: torch.Tensor,
                   task: int = 0,
-                  deterministic: bool = False) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+                  deterministic: bool = False, need_probs: bool = False) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     기존 코드 호환을 위해 제공하는 래퍼. 내부적으로 act(...)를 호출한다.
     - task 인자는 시그니처 호환용일 뿐, 기본 BasePolicy에서는 사용하지 않는다.
@@ -48,18 +49,14 @@ class BasePolicy(nn.Module):
   
   def log_prob(self,
                 obs: torch.Tensor,
-                actions: torch.Tensor,
-                params: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
+                actions: torch.Tensor,) -> torch.Tensor:
       """
       Args:
         obs: [B, obs_dim]
         actions: [B, out_dim]
-        params: state_dict 형태(선택). 주어지면 해당 파라미터로 log_prob 계산.
       Returns:
         [B] 텐서 (각 샘플의 log_prob)
       Note:
         - 분포 타입에 상관없이 로그확률만 정확히 반환하면 알고리즘 쪽은 그대로 작동한다.
       """
       raise NotImplementedError
-
-  

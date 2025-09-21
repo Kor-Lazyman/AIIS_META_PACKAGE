@@ -1,6 +1,6 @@
 from .base import Baseline
 import numpy as np
-
+import torch
 
 class LinearBaseline(Baseline):
     """
@@ -13,7 +13,7 @@ class LinearBaseline(Baseline):
         self._coeffs = None
         self._reg_coeff = reg_coeff
 
-    def predict(self, path):
+    def predict(self, path, device):
         """
         Abstract Class for the LinearFeatureBaseline and the LinearTimeBaseline
         Predicts the linear reward baselines estimates for a provided trajectory / path.
@@ -28,8 +28,9 @@ class LinearBaseline(Baseline):
 
         """
         if self._coeffs is None:
-            return np.zeros(len(path["observations"]))
-        return self._features(path).dot(self._coeffs)
+            return torch.zeros(len(path["observations"]))
+        
+        return torch.matmul(self._features(path, device), (self._coeffs.to(device)))
 
     def get_param_values(self, **tags):
         """
@@ -62,20 +63,19 @@ class LinearBaseline(Baseline):
         """
         assert all([target_key in path.keys() for path in paths])
 
-        featmat = np.concatenate([self._features(path) for path in paths], axis=0)
-        target = np.concatenate([path[target_key] for path in paths], axis=0)
+        
+        target = torch.cat([torch.asarray(path[target_key]) for path in paths], axis = 0)
+        featmat = torch.cat([self._features(path, target.device) for path in paths], axis=0)
         reg_coeff = self._reg_coeff
-
         for _ in range(5):
-            self._coeffs = np.linalg.lstsq(
-                featmat.T.dot(featmat) + reg_coeff * np.identity(featmat.shape[1]),
-                featmat.T.dot(target),
+            self._coeffs = torch.linalg.lstsq(
+                torch.matmul(featmat.T, featmat) + reg_coeff * torch.eye(featmat.shape[1], device=featmat.device, dtype=featmat.dtype),
+                featmat.T @ target,
                 rcond=-1
             )[0]
-            if not np.any(np.isnan(self._coeffs)):
+            if not torch.isnan(self._coeffs).any().item():
                 break
             reg_coeff *= 10
-
     def _features(self, path):
         raise NotImplementedError("this is an abstract class, use either LinearFeatureBaseline or LinearTimeBaseline")
 
@@ -93,17 +93,26 @@ class LinearFeatureBaseline(LinearBaseline):
         reg_coeff: list of paths
 
     """
-    def __init__(self, reg_coeff=1e-5):
+    def __init__(self, min, max, reg_coeff=1e-5,):
         super(LinearFeatureBaseline, self).__init__()
         self._coeffs = None
         self._reg_coeff = reg_coeff
+        self.min = min
+        self.max = max
 
-    def _features(self, path):
-        obs = np.clip(path["observations"], -10, 10)
+    def _features(self, path, device):
+        
+        obs = torch.asarray(path["observations"], device=device)
         path_length = len(path["observations"])
-        time_step = np.arange(path_length).reshape(-1, 1) / 100.0
-        return np.concatenate([obs, obs ** 2, time_step, time_step ** 2, time_step ** 3, np.ones((path_length, 1))],
-                              axis=1)
+        time_step = torch.arange(path_length, dtype=torch.float32, device=device).reshape(-1, 1) / 100.0
+        return torch.cat([
+                obs,
+                obs ** 2,
+                time_step,
+                time_step ** 2,
+                time_step ** 3,
+                torch.ones((path_length, 1), dtype=obs.dtype, device=device)
+            ], dim=1)
 
 
 class LinearTimeBaseline(LinearBaseline):
@@ -124,4 +133,3 @@ class LinearTimeBaseline(LinearBaseline):
         time_step = np.arange(path_length).reshape(-1, 1) / 100.0
         return np.concatenate([time_step, time_step ** 2, time_step ** 3, np.ones((path_length, 1))],
                               axis=1)
-

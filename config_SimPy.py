@@ -529,7 +529,7 @@ INVEN_LEVEL_MIN = 0
 INVEN_LEVEL_MAX = 50  # Capacity limit of the inventory [units]
 
 # Simulation
-SIM_TIME = 200 # Default: 200 [days] per episode
+SIM_TIME = 10 # Default: 200 [days] per episode
 
 # Print logs
 PRINT_SIM = False

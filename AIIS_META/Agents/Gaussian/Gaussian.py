@@ -14,9 +14,9 @@ from torch.distributions.independent import Independent
 from torch.func import functional_call
 from typing import Sequence, Type, List, Dict, Optional, Tuple, Callable
 from AIIS_META.Utils.utils import *
-from AIIS_META.Policies.base import BasePolicy  # 사용 중인 base 인터페이스에 맞춰져 있어야 함
+from AIIS_META.Agents.base import BaseAgent  # 사용 중인 base 인터페이스에 맞춰져 있어야 함
 
-class GaussianPolicy(BasePolicy): # policy를 Agent로 변경해야함
+class GaussianAgent(BaseAgent): # policy를 Agent로 변경해야함
     """
     out_dim 기준의 단일-head diagonal Gaussian policy.
     Args:
@@ -82,14 +82,11 @@ class GaussianPolicy(BasePolicy): # policy를 Agent로 변경해야함
 
     # ---------------- act ----------------
     @torch.no_grad()
-    def get_actions(self, obs: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def get_actions(self, obs: torch.Tensor, deterministic: bool = False, need_probs: bool = False) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         obs: [B, obs_dim] or [obs_dim]
         returns: actions [B, out_dim], info dict {mean, log_std, logp}
         """
-        if obs.dim() == 1:
-            obs = obs.unsqueeze(0)
-
         dist = self.distribution(obs)
         if deterministic:
             action = dist.mean
@@ -101,13 +98,12 @@ class GaussianPolicy(BasePolicy): # policy를 Agent로 변경해야함
         logp = dist.log_prob(action)
         
         info = {"mean": mean, "log_std": log_std, "logp": logp}
-        return action, info
 
-    # ---------------- log_prob ----------------
-    def log_prob(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        """
-        Returns log probability [B]
-        If params provided, use those to build distribution functionally.
-        """
+        return action, info
+    
+    # For original policy
+    def log_prob_by_params(self, obs, actions):
         dist = self.distribution(obs)
-        return dist.log_prob(actions)
+        logp = dist.log_prob(actions)
+        return logp
+

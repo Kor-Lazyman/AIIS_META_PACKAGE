@@ -5,8 +5,8 @@ import copy
 import torch
 from typing import Dict, List, Tuple, Optional, Any
 from .base import MAML_BASE
-
-
+from AIIS_META.Utils import utils
+from torch.autograd import detect_anomaly
 class ProMP(MAML_BASE):
     """
     Proximal Meta-Policy Search
@@ -21,6 +21,8 @@ class ProMP(MAML_BASE):
                  max_path_length: int,
                  agent,                         # 베이스와 동일: policy 역할의 nn.Module
                  policy,
+                 optimizer,
+                 baseline,
                  alpha: float = 1e-3,           # inner lr
                  beta: float  = 1e-3,           # outer lr
                  inner_grad_steps: int = 1,
@@ -32,12 +34,13 @@ class ProMP(MAML_BASE):
                  adaptive_inner_kl_penalty: bool = True,
                  anneal_factor: float = 1.0,    # 1.0이면 고정, <1.0이면 점감
                  device: Optional[torch.device] = None):
-        super().__init__(env, max_path_length, agent, policy,
+        super().__init__(env, max_path_length, agent, policy, optimizer, baseline,
                          alpha, beta, inner_grad_steps, num_tasks,
                          outer_iters=outer_iters,
                          clip_eps=clip_eps,
                          init_inner_kl_penalty=init_inner_kl_penalty,
                          device=(device if device is not None else torch.device("cpu")))
+        self.optimizer = optimizer
         self.clip_eps = clip_eps
         self.target_kl_diff = target_kl_diff
         self.adaptive_inner_kl_penalty = adaptive_inner_kl_penalty
@@ -53,12 +56,19 @@ class ProMP(MAML_BASE):
                                            device=self.device)
 
     # ---------- 유틸 ----------
-    @staticmethod
-    def _ratio(logp_new, logp_old):
-        ratios = []
+    def _ratio(self, logp_new, logp_old, advs, clip = False):
+        total_surr = 0
+
+        eps = self.clip_eps * self.anneal_coeff
         for x in range(len(logp_new)):
-            ratios.append(torch.exp(logp_new[x] - logp_old[x]))
-        return ratios
+            surr = torch.exp(logp_new[x] - logp_old[x])
+            if clip:
+                total_surr+=torch.min(torch.clamp(surr, 1.0-eps , 1.0+eps))*advs[x]
+            
+            else:
+                total_surr+=surr
+
+        return total_surr
 
     @staticmethod
     def _kl_from_logps(logp_old: torch.Tensor, logp_new: torch.Tensor) -> torch.Tensor:
@@ -66,53 +76,44 @@ class ProMP(MAML_BASE):
         return (logp_old - logp_new).mean()
 
     # ---------- 훅 구현(목적함수) ----------
-    def inner_obj(self, batch: dict, base, adapted_state_dicts) -> torch.Tensor:
+    def inner_obj(self, batchs: dict, base, adapted_state_dicts) -> torch.Tensor:
+
         """
         -(ratio * A).mean()
         주의: MAML_BASE.inner_loop가 use_params로 이미 현재 파라미터를 로드한 상태.
         params 인자는 서명 일치용이며 사용하지 않아도 됨.
         """
-        for traj in batch:
+        batchs["logp"] = []
+        surrs = []
+        for idx in range(len(batchs["actions"])):
             dev = next(self.agent.parameters()).device
-            obs = self._to_tensor(traj["observations"], dev, torch.float32)
-            acts = traj["actions"]
-            adv = self._to_tensor(traj["advantages"], dev, torch.float32)
-            
-            traj["logp"] =  self._to_tensor([traj["logp"] for traj in traj["agent_infos"]], dev, torch.float32)
-            print(traj["logp"])
-            self.agent.policy.load_state_dict(adapted_state_dicts)
-            traj["logp"] = self.agent.log_prob(obs, acts)
-            logp_old = traj["logp"]  # [N]
-            
+            obs = self._to_tensor(batchs["observations"][idx], dev, torch.float32)
+            adv = self._to_tensor(batchs["advantages"][idx], dev, torch.float32)
 
-            self.agent.policy.load_state_dict(base)
-            logp_new = self.agent.log_prob(obs, acts)  # [N], 현 파라미터(컨텍스트) 기준
-            ratio = self._ratio(logp_new, logp_old)
-        return -(ratio * adv).mean()
+            _, logp_outer =self.agent.get_outer_actions(obs)
+            logp_inner = batchs["agent_infos"][idx]["logp"]
+            surrs.append(self._ratio(logp_new=logp_inner, logp_old=logp_outer, advs=adv, clip = False))
 
-    def outer_obj(self, batch: dict, params: Dict[str, torch.Tensor]) -> torch.Tensor:
+        return sum(surrs)/len(surrs)
+
+    def outer_obj(self, batchs) -> torch.Tensor:
         """
-        PPO-clip + 최근 inner-step KL penalty
+        -(ratio * A).mean()
+        주의: MAML_BASE.inner_loop가 use_params로 이미 현재 파라미터를 로드한 상태.
+        params 인자는 서명 일치용이며 사용하지 않아도 됨.
         """
+        batchs["logp"] = []
+        surrs = []
+        for idx in range(len(batchs["actions"])):
+            dev = next(self.agent.parameters()).device
+            obs = self._to_tensor(batchs["observations"][idx], dev, torch.float32)
+            adv = self._to_tensor(batchs["advantages"][idx], dev, torch.float32)
 
-        dev = next(self.agent.parameters()).device
-        obs  = self._to_tensor(batch["observations"], dev, torch.float32)
-        acts = self._to_tensor(batch["actions"],      dev, torch.float32)
-        adv  = self._to_tensor(batch["advantages"],   dev, torch.float32)
-        logp_old = self._to_tensor(batch["agent_infos"]["logp"], dev, torch.float32)
-
-        logp_new = self.agent.log_prob(obs, acts)
-        ratio = self._ratio(logp_new, logp_old)
-
-        eps = self.clip_eps * self.anneal_coeff
-        unclipped = ratio * adv
-        clipped = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * adv
-        surr_loss = -torch.min(unclipped, clipped).mean()
-
-        # 최근 inner 단계별 KL 평균(스칼라) × 각 단계 penalty 계수 → 평균으로 합성
-        inner_pen = (self.inner_kl_coeff * self._last_inner_kls).mean()
-
-        return surr_loss + inner_pen
+            _, logp_outer =self.agent.get_outer_actions(obs)
+            logp_inner = batchs["agent_infos"][idx]["logp"]
+            surrs.append(self._ratio(logp_new=logp_inner, logp_old=logp_outer, advs=adv, clip = True))
+        
+        return sum(surrs)/len(surrs)
 
     def step_kl(self, batch: dict, params: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -161,45 +162,40 @@ class ProMP(MAML_BASE):
                 self.anneal_coeff *= self.anneal_factor
                 return adapted_state_dicts, last_paths
 
-            # 2) 태스크별 배치 생성
-            processed_batches: List[dict] = []
-            for task_id in range(self.num_tasks):
-                self.sample_processor.process_samples(last_paths[task_id], agent = self.agent)
-                processed_batches.append(last_paths[task_id])
+            else:
+                # 2) 태스크별 배치 생성
+                processed_batches = self.sample_processor.process_samples(last_paths)
 
-            # 3) 태스크별 inner 업데이트 + 이번 step KL 측정
-            new_adapted: List[Dict[str, torch.Tensor]] = []
-            for task_id in range(self.num_tasks):
-                batch = processed_batches[task_id]
-                # (a) 현재 파라미터 로드 후 inner loss/grad
-                loss_in = self.inner_obj(batch, base_state_dict, adapted_state_dicts[task_id])
-                grads = torch.autograd.grad(
+                # 3) 태스크별 inner 업데이트 + 이번 step KL 측정
+                new_adapted: List[Dict[str, torch.Tensor]] = []
+                for task_id in range(self.num_tasks):
+                    print(task_id)
+                    batch = processed_batches[task_id]
+                    # (a) 현재 파라미터 로드 후 inner loss/grad
+                    loss_in = self.inner_obj(batch, base_state_dict, adapted_state_dicts[task_id])
+                    grads = torch.autograd.grad(
                     loss_in,
-                    [p for _, p in self.agent.policy.named_parameters()],
+                    [p for _, p in self.sampler.agents[task_id].policy.named_parameters()],
                     create_graph=False,
                     retain_graph=False,
                     allow_unused=True
-                )
+                    )
 
-                # (b) θ' = θ - α * g  (state_dict 갱신)
-                updated_sd = copy.deepcopy(adapted_state_dicts[task_id])
-                for (name, _), g in zip(self.policy.named_parameters(), grads):
-                    if g is None:
-                        continue
-                    updated_sd[name] = (updated_sd[name] - self.alpha * g).detach()
+                    # (b) θ' = θ - α * g  (state_dict 갱신)
+                    updated_sd = copy.deepcopy(adapted_state_dicts[task_id])
+                    for (name, _), g in zip(self.sampler.agents[task_id].policy.named_parameters(), grads):
+                        if g is None:
+                            continue
+                        updated_sd[name] = (updated_sd[name] - self.alpha * g).detach()
+                    '''
+                    # (c) KL(old||new) 추정 (old=현재 batch의 logp, new=updated_sd 기준 logp)
+                    with self.use_params(updated_sd), torch.no_grad():
+                        logp_new = self.agent.log_prob(batch["observations"], batch["actions"])
+                        kl_est = self._kl_from_logps(batch["agent_infos"]["logp"], logp_new)
+                        inner_kls_per_step[step] += kl_est / float(self.num_tasks)
+                    '''
 
-                # (c) KL(old||new) 추정 (old=현재 batch의 logp, new=updated_sd 기준 logp)
-                with self.use_params(updated_sd), torch.no_grad():
-                    logp_new = self.agent.log_prob(batch["observations"], batch["actions"])
-                    kl_est = self._kl_from_logps(batch["agent_infos"]["logp"], logp_new)
-                    inner_kls_per_step[step] += kl_est / float(self.num_tasks)
-
-                new_adapted.append(updated_sd)
-
-            adapted_state_dicts = new_adapted  # 다음 step을 위해 교체
-
-        # 안전망
-        return adapted_state_dicts, last_paths
+                adapted_state_dicts = new_adapted  # 다음 step을 위해 교체
 
     # ---------- KL penalty 계수 적응 ----------
     def _adapt_inner_kl_coeff(self, inner_kls: torch.Tensor, target: float):

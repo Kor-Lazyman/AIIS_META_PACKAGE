@@ -7,7 +7,7 @@ import numpy as np
 from config_RL import * 
 # import environment as env # for Meta-learning
 import environment as env #for baseline_test
-
+import torch
 from log_SimPy import *
 from log_RL import *
 import matplotlib.pyplot as plt
@@ -125,7 +125,7 @@ class MetaEnv(Env):
             for _ in range(len(I[ASSEMBLY_PROCESS])):
                 if I[ASSEMBLY_PROCESS][_]["TYPE"] == "Material":
                     # Set action as predicted value
-                    I[ASSEMBLY_PROCESS][_]["LOT_SIZE_ORDER"] = min(max(np.round(action[i]),0),10) # 양수 상한
+                    I[ASSEMBLY_PROCESS][_]["LOT_SIZE_ORDER"] = min(max(torch.round(action[i]),0),10) # 양수 상한
                     i += 1
                     test_actions.append(I[ASSEMBLY_PROCESS][_]['LOT_SIZE_ORDER'])
         
