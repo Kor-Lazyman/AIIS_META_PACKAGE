@@ -46,23 +46,14 @@ class MetaSampler(Sampler):
         self.total_samples = num_tasks * rollout_per_task * max_path_length
         self.parallel = parallel
         self.total_timesteps_sampled = 0
-        self.agents = [copy.deepcopy(self.agent) for _ in range(self.num_tasks)]
+        self.agent = agent
         # setup vectorized environment
 
         if self.parallel:
             self.vec_env = MetaParallelEnvExecutor(env, self.num_tasks, self.envs_per_task, self.max_path_length)
         else:
             self.vec_env = MetaIterativeEnvExecutor(env, self.num_tasks, self.envs_per_task, self.max_path_length)
-
-    def update_tasks(self):
-        """
-        Samples a new goal for each meta task
-        """
-        tasks = self.env.sample_tasks(self.num_tasks)
-        assert len(tasks) == self.num_tasks
-        self.vec_env.set_tasks(tasks)
-
-    def obtain_samples(self, state_dict_per_task, log=False, log_prefix=''):
+    def obtain_samples(self, adapted_dicts, post_update = False):
         """
         Collect batch_size trajectories from each task
 
@@ -73,7 +64,7 @@ class MetaSampler(Sampler):
         Returns: 
             (dict) : A dict of paths of size [num_tasks] x (batch_size) x [5] x (max_path_length)
         """
-        self.update_tasks()
+        self.vec_env.set_tasks(self.env.tasks)
         # initial setup / preparation
         paths = OrderedDict()
         for i in range(self.num_tasks):
@@ -99,11 +90,11 @@ class MetaSampler(Sampler):
             # 길이 = num_tasks * envs_per_task, 각 원소 dict
             
             # (a) 정책 파라미터를 해당 태스크의 params로 덮어쓰기
-            if task_id != rollout_counter//self.rollout_per_task:
+            if task_id != rollout_counter//self.rollout_per_task and post_update:
+                self.agent.load_state_dict(adapted_dicts[task_id])
                 task_id += 1
-                self.agents[task_id].load_state_dict(state_dict_per_task[task_id], strict=False)
-            
-            actions, agent_infos = self.agents[task_id].get_actions(obs_per_task)
+           
+            actions, agent_infos = self.agent.get_actions(obs_per_task)
             
             # (b) 단일 태스크 배치에 대한 액션/정보 계산
             #     정책에 act_batch(obs_block) 메서드가 있어야 한다.

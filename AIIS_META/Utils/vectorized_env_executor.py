@@ -36,7 +36,6 @@ class MetaIterativeEnvExecutor(object):
         """
 
         assert len(actions) == self.num_envs
-
         all_results = [env.step(a) for (a, env) in zip(actions, self.envs)]
 
         # stack results split to obs, rewards, ...
@@ -136,7 +135,7 @@ class MetaParallelEnvExecutor(object):
 
         # step remote environments
         for remote, action_list in zip(self.remotes, actions_per_meta_task):
-            remote.send(('step', action_list))
+            remote.send(('step', action_list.detach().clone()))
 
         results = [remote.recv() for remote in self.remotes]
 
@@ -155,7 +154,7 @@ class MetaParallelEnvExecutor(object):
             remote.send(('reset', None))
         return sum([remote.recv() for remote in self.remotes], [])
 
-    def set_tasks(self, tasks=None):
+    def set_tasks(self, tasks):
         """
         Sets a list of tasks to each worker
 

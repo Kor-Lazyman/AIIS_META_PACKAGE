@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from AIIS_META.Sampler.meta_sampler import MetaSampler as sampler
 from AIIS_META.Sampler.meta_sample_processor import MetaSampleProcessor
-
+from torch.utils.tensorboard import SummaryWriter
 class MAML_BASE(nn.Module):
     """
     MAML 틀 (FO-MAML):
@@ -19,16 +19,16 @@ class MAML_BASE(nn.Module):
                  env,
                  max_path_length,
                  agent,
-                 policy,
                  optimizer,
+                 tensor_log,
                  baseline = None,
-                 alpha: float = 1e-3,     # inner lr
+                 alpha: float = 0.02,     # inner lr
                  beta: float = 1e-3,      # outer lr
                  inner_grad_steps: int = 1,
                  num_tasks: int = 4,
+                 rollout_per_task: int = 5,
                  outer_iters: int = 5,
                  parallel: bool = False,
-                 rollout_per_task: int = 5,
                  clip_eps: float = 0.2,
                  init_inner_kl_penalty: float = 1e-2,
                  device = torch.device('cuda')):
@@ -36,7 +36,6 @@ class MAML_BASE(nn.Module):
         self.optimizer = optimizer
         self.env = env
         self.agent = agent
-        self.policy = policy
         self.alpha = alpha
         self.beta = beta
         self.inner_grad_steps = inner_grad_steps
@@ -46,7 +45,8 @@ class MAML_BASE(nn.Module):
         self.clip_eps = clip_eps
         self.inner_kl_coeff = torch.full((inner_grad_steps,), init_inner_kl_penalty, dtype=torch.float32, device=device)
         self.device = device
-        self.sample_processor = MetaSampleProcessor(baseline=baseline, device=device)
+        self.sample_processor = MetaSampleProcessor(baseline=baseline, normalize_adv=True,device=device)
+        self.writer = SummaryWriter(log_dir=tensor_log)
         self.sampler = sampler(self.env,
                                self.agent,
                                self.rollout_per_task,
@@ -71,42 +71,6 @@ class MAML_BASE(nn.Module):
 
     # -------------------- 내부 유틸 --------------------
 
-    def _sanitize_policy_state_dict(self, sd: dict) -> dict:
-        """'policy.' 접두사 제거 + policy에 없는 키 제거 (log_std 같은 키 필터)"""
-        clean = {}
-        for k, v in sd.items():
-            kk = k.split("policy.", 1)[-1]  # 'policy.' 있으면 제거
-            clean[kk] = v
-        return clean
-
-    @contextmanager
-    def use_params(self, policy_state_dict: dict):
-        # 1) 현재 policy의 순수 state_dict만 백업
-        orig = {k: v.clone() for k, v in self.policy.state_dict().items()}
-
-        # 2) 들어온 dict 정리 후 로드 (strict=True로 키 검증)
-        sd_clean = self._sanitize_policy_state_dict(policy_state_dict)
-        self.policy.load_state_dict(sd_clean, strict=True)
-
-        try:
-            yield
-        finally:
-            # 3) 원래 policy로 복원
-            self.policy.load_state_dict(orig, strict=True)
-
-    def _zero_like_paramdict(self) -> Dict[str, torch.Tensor]:
-        return {n: torch.zeros_like(p, device=p.device) for n, p in self.agent.policy.named_parameters()}
-
-    def apply_base_grads(self, base_grads: Dict[str, torch.Tensor]):
-        """FO-MAML: 태스크별/스텝별로 모은 grad를 meta-parameter에 적용"""
-        self.optimizer.zero_grad(set_to_none=True)
-        for n, p in self.policy.named_parameters():
-            g = base_grads.get(n, None)
-            if g is not None:
-                # grad를 그대로 할당 (alpha로 스케일 X) → 스케일은 self.beta가 담당
-                p.grad = g.clone()
-        self.optimizer.step()
-
     def _to_tensor(self, x, device, dtype=torch.float32):
         if isinstance(x, torch.Tensor):
             return x.to(device=device, dtype=dtype)
@@ -118,17 +82,16 @@ class MAML_BASE(nn.Module):
         2) (반복) outer_loop -> meta update
         """
         for epoch in range(epochs):
-            base_sd = copy.deepcopy(self.policy.state_dict())
+            self.env.sample_tasks(self.num_tasks)
+            base_sd = copy.deepcopy(self.agent.state_dict())
             adapted_state_dicts, paths = self.inner_loop(base_state_dict=base_sd)
             for iter in range(self.outer_iters):
-                print(iter)
                 self.outer_loop(paths, adapted_state_dicts)
+            reward, cost_dict, _ = self.env.log_diagnostics(paths)
+            self.writer.add_scalar("Reward", reward, global_step=epoch)
+            self.writer.add_scalars("Costs",cost_dict, global_step=epoch)
 
     # -------------------- inner / outer --------------------
-    @torch.no_grad()
-    def _clone_state_dicts(self, base_state_dict: Dict[str, torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
-        return [copy.deepcopy(base_state_dict) for _ in range(self.num_tasks)]
-
     def inner_loop(self,
                    base_state_dict: Optional[Dict[str, torch.Tensor]] = None
                    ) -> Tuple[List[Dict[str, torch.Tensor]], List]:
@@ -139,8 +102,8 @@ class MAML_BASE(nn.Module):
           - clip eps anneal 계수 갱신
         반환: (adapted_state_dicts, last_paths)
         """
-
-        base_state_dict = copy.deepcopy(self.policy.state_dict())
+        self.sampler.agent = self.agent
+        base_state_dict = copy.deepcopy(self.agent.state_dict())
 
         # 태스크별 state_dict 클론
         adapted_state_dicts = [copy.deepcopy(base_state_dict) for _ in range(self.num_tasks)]
@@ -153,7 +116,7 @@ class MAML_BASE(nn.Module):
 
         for step in range(self.inner_grad_steps + 1):
             # 1) 현재 적응 파라미터들로 수집
-            last_paths = self.sampler.obtain_samples(adapted_state_dicts)  # list[task] of paths
+            last_paths = self.sampler.obtain_samples()  # list[task] of paths
 
             if step == self.inner_grad_steps:
                 # outer에서 사용할 마지막 경로/적응 파라미터 반환
@@ -169,12 +132,10 @@ class MAML_BASE(nn.Module):
                 processed_batches = self.sample_processor.process_samples(last_paths)
 
                 # 3) 태스크별 inner 업데이트 + 이번 step KL 측정
-                new_adapted: List[Dict[str, torch.Tensor]] = []
                 for task_id in range(self.num_tasks):
-                    print(task_id)
                     batch = processed_batches[task_id]
                     # (a) 현재 파라미터 로드 후 inner loss/grad
-                    loss_in = self.inner_obj(batch, base_state_dict, adapted_state_dicts[task_id])
+                    loss_in = self.inner_obj(batch, adapted_state_dicts[task_id])
                     grads = torch.autograd.grad(
                     loss_in,
                     [p for _, p in self.sampler.agents[task_id].policy.named_parameters()],
@@ -184,11 +145,10 @@ class MAML_BASE(nn.Module):
                     )
 
                     # (b) θ' = θ - α * g  (state_dict 갱신)
-                    updated_sd = copy.deepcopy(adapted_state_dicts[task_id])
                     for (name, _), g in zip(self.sampler.agents[task_id].policy.named_parameters(), grads):
                         if g is None:
                             continue
-                        updated_sd[name] = (updated_sd[name] - self.alpha * g).detach()
+                        adapted_state_dicts[task_id][name] = (adapted_state_dicts[task_id][name] + self.alpha * g).detach()
                     '''
                     # (c) KL(old||new) 추정 (old=현재 batch의 logp, new=updated_sd 기준 logp)
                     with self.use_params(updated_sd), torch.no_grad():
@@ -196,9 +156,6 @@ class MAML_BASE(nn.Module):
                         kl_est = self._kl_from_logps(batch["agent_infos"]["logp"], logp_new)
                         inner_kls_per_step[step] += kl_est / float(self.num_tasks)
                     '''
-
-                adapted_state_dicts = new_adapted  # 다음 step을 위해 교체
-        return adapted_state_dicts, last_paths
 
     def outer_loop(self,
                    paths,  # inner_loop에서 마지막으로 수집된 경로(또는 새로 수집 가능)
@@ -209,19 +166,20 @@ class MAML_BASE(nn.Module):
         """
         # 필요 시: 새 데이터로 outer 수집하고 싶다면 아래 한 줄로 대체 가능
         # paths = self.sampler.obtain_samples(adapted_state_dicts)
-        
-        # 태스크별 배치 생성
-        last_paths = paths
-        processed_batches = self.sample_processor.process_samples(last_paths)
-
+    
         # 3) 태스크별 inner 업데이트 + 이번 step KL 측정
-        loss_out = 0
+        loss_outs = []
         for task_id in range(self.num_tasks):
-
-            batch = processed_batches[task_id]
             # (a) 현재 파라미터 로드 후 inner loss/grad
-            loss_out += self.outer_obj(batch)
-  
-        self.optimizer.zero_grad()
-        loss_out.backward(retain_graph = True)
+            batch = paths[task_id]
+            loss_outs.append(self.outer_obj(batch))
+        
+        # (a) 현재 파라미터 로드 후 inner loss/grad
+        loss_out = sum(loss_outs)/len(loss_outs)
+        self.optimizer.zero_grad(set_to_none=True)
+        loss_out.backward()                 # retain_graph=False (기본)
         self.optimizer.step()
+    
+        # (선택) 평균 내기: 필요 시
+        # for name in grad_accumulator:
+        #     grad_accumulator[name] /= len(grads)

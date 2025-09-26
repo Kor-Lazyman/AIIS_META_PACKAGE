@@ -66,7 +66,6 @@ class GaussianAgent(BaseAgent): # policy를 Agent로 변경해야함
         obs = torch.as_tensor(obs, device=device, dtype=dtype)
 
         mean = self.policy(obs)
-
         log_std = torch.clamp(self.log_std, min=self.min_log_std)
 
         # expand to batch
@@ -105,5 +104,6 @@ class GaussianAgent(BaseAgent): # policy를 Agent로 변경해야함
     def log_prob_by_params(self, obs, actions):
         dist = self.distribution(obs)
         logp = dist.log_prob(actions)
+        
         return logp
 

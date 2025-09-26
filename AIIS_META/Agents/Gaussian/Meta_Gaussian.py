@@ -6,9 +6,9 @@ from AIIS_META.Utils.utils import *
 from .Gaussian import GaussianAgent  # 기존 구현 사용
 
 class MetaGaussianAgent(GaussianAgent):
-    def __init__(self, meta_batch_size: int, *args, **kwargs):
+    def __init__(self, num_tasks: int, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.meta_batch_size = meta_batch_size
+        self.num_tasks = num_tasks
         self._pre_update_mode = True
         print("gaussian policy ready")
 
@@ -31,18 +31,15 @@ class MetaGaussianAgent(GaussianAgent):
             action = dist.mean
         else:
             action = dist.rsample()  # reparameterized sample (rsample) could be used; .sample() also ok
+
         logps = dist.log_prob(action)
         
-        info = [[dict(logp=logps[task_idx][rollout_idx]) for rollout_idx in range(len(logps[task_idx]))] for task_idx in range(self.meta_batch_size)]
+        info = [[dict(logp=logps[task_idx][rollout_idx]) for rollout_idx in range(len(logps[task_idx]))] for task_idx in range(self.num_tasks)]
 
         return action, info
 
-    def get_outer_actions(self, obses, deterministic: bool = False):
+    def get_outer_actions(self, obses,  actions, deterministic: bool = False):
         dist =self.distribution(obses)
-        if deterministic:
-            action = dist.mean
-        else:
-            action = dist.rsample()  # reparameterized sample (rsample) could be used; .sample() also ok
-        logps = dist.log_prob(action)
-
-        return action, logps
+        log_ps = dist.log_prob(actions)
+    
+        return log_ps

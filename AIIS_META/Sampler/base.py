@@ -86,8 +86,6 @@ class SampleProcessor(object):
         Returns:
             (dict) : Processed sample data of size [7] x (batch_size x max_path_length)
         """
-        print(paths.keys())
-        print(type(paths))
         assert type(paths) == list, 'paths must be a list'
         assert paths[0].keys() >= {'observations', 'actions', 'rewards'}
         assert self.baseline, 'baseline must be specified - use self.build_sample_processor(baseline_obj)'
@@ -111,16 +109,18 @@ class SampleProcessor(object):
         # 2) fit baseline estimator using the path returns and predict the return baselines
         self.baseline.fit(paths, target_key="returns")
         all_path_baselines = [self.baseline.predict(path,self.device) for path in paths]
-        paths = utils.compute_gae(paths, all_path_baselines)
+
+        paths = self._compute_advantages(paths, all_path_baselines)
+        
         # 4) stack path data
         observations, actions, rewards, returns, advantages, env_infos, agent_infos = self._stack_path_data(paths)
-        
+
         # 5) if desired normalize / shift advantages
         if self.normalize_adv:
             advantages = utils.normalize_advantages(advantages)
         if self.positive_adv:
             advantages = utils.shift_advantages_to_positive(advantages)
-
+    
         # 6) create samples_data object
         samples_data = dict(
             observations=observations,
@@ -145,4 +145,16 @@ class SampleProcessor(object):
         agent_infos = [utils.stack_tensor_dict_list(path["agent_infos"]) for path in paths]
 
         return observations, actions, rewards, returns, advantages, env_infos, agent_infos
- 
+    
+    def _compute_advantages(self, paths, all_path_baselines):
+        assert len(paths) == len(all_path_baselines)
+     
+        for idx, path in enumerate(paths):
+            path_baselines = np.append(all_path_baselines[idx], 0)
+            deltas = path["rewards"] + \
+                     self.discount * path_baselines[1:] - \
+                     path_baselines[:-1]
+            path["advantages"] = utils.discount_cumsum(
+                deltas, self.discount * self.gae_lambda)
+
+        return paths

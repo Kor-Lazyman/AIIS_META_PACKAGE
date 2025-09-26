@@ -4,7 +4,7 @@ import scipy.signal
 import json
 import torch
 from typing import Dict, List, Tuple, Optional
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 
 def to_tensor(x):
         if isinstance(x, torch.Tensor):
@@ -14,47 +14,17 @@ def to_tensor(x):
             x = np.asarray(x)
         return torch.as_tensor(x, device=device)
 
-def compute_gae(paths, all_path_values, gamma=0.99, lam=0.95):
-    """
-    paths: list of dict, 각 dict는 {"rewards": [...], "dones": [...], ...}
-    all_path_values: list of Tensor, 각 trajectory별 value predictions (길이 = T)
-    """
-    for idx, path in enumerate(paths):
-        rewards = torch.stack(path["rewards"])           # [T]
-        values  = all_path_values[idx]                   # [T]
-        dones   = torch.as_tensor(
-            path.get("dones", torch.zeros_like(rewards)),
-            device=values.device, dtype=values.dtype
-        )                                                # [T]
-
-        T = len(rewards)
-        advantages = torch.zeros(T, device=values.device, dtype=values.dtype)
-        gae = 0.0
-
-        # 뒤에서 앞으로
-        for t in reversed(range(T)):
-            if t == T - 1:  # 마지막 step → next_value=0
-                next_value = 0.0
-            else:
-                next_value = values[t+1]
-
-            delta = rewards[t] + gamma * next_value * (1 - dones[t]) - values[t]
-            gae = delta + gamma * lam * (1 - dones[t]) * gae
-            advantages[t] = gae
-
-        path["advantages"] = advantages
-        path["returns"] = advantages + values   # R_t = A_t + V(s_t)
-
-    return paths
 
 def discount_cumsum(rewards, discount):
     if type(rewards[0]) != torch.tensor:
         rewards[0] = to_tensor(rewards[0])
+
     returns = [rewards[-1]]
     for i in range(1, len(rewards)):
         if type(rewards[-i]) != torch.tensor:
-            rewards[i] = to_tensor(rewards[-i])
-        returns.append(returns[-1]*discount + rewards[i-1])
+            rewards[-i-1] = to_tensor(rewards[-i-1])
+        returns.append(returns[-1]*discount + rewards[-i-1])
+    
     returns.reverse()
     return returns
 
@@ -90,6 +60,29 @@ def stack_tensor_dict_list(tensor_dict_list):
             v = [[x[k] for x in tensor_dict_list]]
         ret[k] = v[0]
     return ret
+
+def normalize_advantages(advantages):
+    """
+    Args:
+        advantages (list[float]): list of advantages
+
+    Returns:
+        list[float]: normalized advantages
+    """
+
+    n = len(advantages[0])*len(advantages)
+    if n == 0:
+        return []
+
+    mean_val = sum(sum(advantage) / n for advantage in advantages)
+    var = sum(sum((x - mean_val) ** 2 for x in advantage) for advantage in advantages) / n
+    std = var ** 0.5
+
+    return [[(x - mean_val) / (std + 1e-8) for x in advantage] for advantage in advantages]
+
+
+def shift_advantages_to_positive(advantages):
+    return (advantages - np.min(advantages)) + 1e-8
 '''
 def get_original_tf_name(name):
     """
