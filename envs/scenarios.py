@@ -21,8 +21,8 @@ def create_scenarios():
     # DEMAND
     demand_uniform_range = [
         (i, j)
-        for i in range(5, 14)  # Range for demand min values
-        for j in range(i, 14)  # Range for demand max values
+        for i in range(5, 16)  # Range for demand min values
+        for j in range(i, 16)  # Range for demand max values
         if i <= j
     ]
     

@@ -131,7 +131,7 @@ I = {
             "SETUP_COST_PRO": 1,
             "DELIVERY_COST": 1,
             "DUE_DATE": 7,
-            "SHORTAGE_COST_PRO": 50
+            "SHORTAGE_COST_PRO": 100
         },
         1: {
             "ID": 1,

@@ -82,9 +82,6 @@ class LinearBaseline(Baseline):
 
 class LinearFeatureBaseline(LinearBaseline):
     """
-    Linear (polynomial) time-state dependent return baseline model
-    (see. Duan et al. 2016, "Benchmarking Deep Reinforcement Learning for Continuous Control", ICML)
-
     Fits the following linear model
 
     reward = b0 + b1*obs + b2*obs^2 + b3*t + b4*t^2+  b5*t^3
@@ -93,12 +90,10 @@ class LinearFeatureBaseline(LinearBaseline):
         reg_coeff: list of paths
 
     """
-    def __init__(self, min, max, reg_coeff=1e-5,):
+    def __init__(self, reg_coeff=1e-5,):
         super(LinearFeatureBaseline, self).__init__()
         self._coeffs = None
         self._reg_coeff = reg_coeff
-        self.min = min
-        self.max = max
 
     def _features(self, path, device):
         

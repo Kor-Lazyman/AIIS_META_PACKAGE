@@ -220,14 +220,11 @@ class MetaEnv(Env):
             paths (list) : list of all paths collected with this env during this iteration
             prefix (str) : prefix for logger
         """
-        print("="*20)
         rewards = 0
         for task_idx in range(len(paths)):
             for idx in range(len(paths[task_idx]['rewards'])):
                 rewards += sum(paths[task_idx]['rewards'][idx])
         average = rewards/(len(paths)*len(paths[0]))
-        #print("Reward:", average)
-        print("="*20)
 
         '''
         if now+1 == goal:
@@ -245,12 +242,10 @@ class MetaEnv(Env):
             'Order cost': 0,
             'Shortage cost': 0
         }
-        
         for task_idx in range(len(paths)):
             for idx in range(len(paths[task_idx]['env_infos'])):
                 for key in self.cost_dict.keys():
                     cost_dict[key] = cost_dict[key] + paths[task_idx]['env_infos'][idx][key][-1]/(len(paths)*len(paths[0]))
-        print("Cost_Dict:", cost_dict[key])
         '''
         action_datas = {
             "Mat1-I": [min(max(0,np.round(action[0])),5) for action in paths[0]['actions']],
