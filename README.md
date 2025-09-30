@@ -1,4 +1,3 @@
-<img width="852" height="692" alt="meta-package_without_envs drawio (1)" src="https://github.com/user-attachments/assets/1c1f0449-1d10-4874-a3bd-499ccbf234ab" /># AIIS_META_PACKAGE
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118</br>
 pip install scipy</br>
 pip install simpy</br>
