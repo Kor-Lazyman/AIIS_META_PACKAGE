@@ -6,4 +6,4 @@ pip install gymnasium</br>
 pip install pandas</br>
 pip install matplotlib</br>
 ## FlowChart
-<img width="852" height="692" alt="meta-package_without_envs drawio (1)" src="https://github.com/user-attachments/assets/0e4baf41-a2a3-4bd2-ba9f-5d094c9b3957" />
+<img width="851" height="692" alt="meta-package_without_envs drawio (2)" src="https://github.com/user-attachments/assets/231b3330-7840-4c1c-a042-2855d6c1ddd2" />
